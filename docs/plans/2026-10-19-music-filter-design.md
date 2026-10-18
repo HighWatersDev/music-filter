@@ -42,9 +42,18 @@ Manifest V3 extension for Chrome and Firefox. No backend. All processing runs on
 Constraints:
 
 - After `createMediaElementSource`, the element's audio only plays through the graph. "Off" means routing the graph to pass-through, not detaching.
-- Added delay is about 30 to 40 ms, below noticeable lip-sync drift. No video delay is needed in v1.
+- Added delay is about 40 to 70 ms. DeepFilterNet3's algorithmic latency is about 40 ms (20 ms window plus 2 frames of lookahead), plus output buffering. Audio up to 125 ms late is within ITU-R BT.1359 detectability, so no video delay is needed in v1.
 
-Main risk: YouTube's Content Security Policy may block loading the worklet module or WASM from a content script. Fallbacks are a Blob URL worklet or running the graph in an offscreen document. The spike settles this first.
+CSP risk, resolved by a live probe on 2026-10-19 (Chrome 148, see `docs/research/2026-10-19-landscape.md`):
+
+- Load the worklet from a `chrome-extension://` web_accessible_resource. Blob URLs are blocked by YouTube's CSP.
+- Compile the WASM in the content script and pass the `WebAssembly.Module` through `processorOptions`. Compiling inside the worklet also works today, but only because YouTube allows `'unsafe-eval'`.
+- `performance.now` does not exist in AudioWorkletGlobalScope. Time frames with `Date.now`.
+- No Workers and no SharedArrayBuffer from the content script on YouTube. DeepFilterNet3 must fit a single audio thread with SIMD.
+
+Reference implementation: [WorkAdventure noise-suppression](https://github.com/workadventure/noise-suppression) runs libDF compiled to WASM in an AudioWorklet at 2.7% of an M4 core.
+
+Fallback if YouTube tightens its CSP: `chrome.tabCapture` with an offscreen document, as the NoMusic extension does.
 
 ## Model
 
@@ -62,7 +71,11 @@ Known weakness: speech enhancement keeps singing because it sounds like a voice.
 - Instrumental intro or outro: removed.
 - Song with lyrics: the vocals come through, with the instruments mostly gone.
 
-v1.1 fix: fine-tune DeepFilterNet with singing labelled as noise. Mix clean speech (DNS Challenge, LibriSpeech) with full songs including vocals (MUSDB18, FMA), and train it to output speech only. One rented-GPU job, about 1 to 2 days on an A100. Same model size, so no extension changes.
+Likely root cause: DNS Challenge clean speech, which DeepFilterNet3 trained on, includes singing from VocalSet. The model was taught that singing is speech.
+
+v1.1 fix: retrain or fine-tune DeepFilterNet with singing moved to the noise side. Drop VocalSet from the clean set and add sung vocals (MUSDB18, MoisesDB, DnR v3) as noise. One rented-GPU job, about 1 to 2 days on an A100. Same model size, so no extension changes. Candidate upgrade if quality needs it: DPDFNet (Apache-2.0, causal, ONNX), which needs a WASM CPU benchmark first.
+
+Product angle: keeping sung vocals suits nasheeds and recitation, and removing them suits pop songs. Shipping both weights as a "keep vocals / remove all singing" toggle is a feature no competitor has.
 
 ## Failure handling
 
@@ -93,6 +106,8 @@ Rule: the extension must never leave the user with silent video.
 | Spike (½ to 1 day) | Worklet and WASM load on YouTube despite its CSP. DeepFilterNet3 runs in real time in the worklet. |
 | v1 | Chrome and Firefox extension, voices only, stock weights |
 | v1.1 | Singing-as-noise fine-tune, swap weights |
-| v2, everything but music | Evaluate low-latency separation (e.g. HS-TasNet) first. If a 1 to 3 s buffer is still needed, sync with a hidden look-ahead `<video>` that plays D seconds ahead and feeds the model while the visible one plays muted with processed audio. |
-| Restream mode | Same model natively in a relay: ffmpeg in → libDF → HLS out. Voices only needs about 1 CPU core per stream, no GPU. Settle copyright and terms-of-service questions for third-party content first. |
-| Mobile | The YouTube app cannot be filtered and the cross-origin iframe player blocks audio access. Likely needs our own player backed by restream mode. |
+| v2, everything but music | Candidates: Bandit v2 (Apache-2.0, dialogue / music / effects) streamed with the one-hop method from arXiv 2609.35397, or a distilled causal student. The model runs in a hidden web-accessible extension iframe, which has Workers and WebGPU, bridged to the worklet with a transferred MessagePort. If a 1 to 3 s buffer is needed, delay the picture with a `requestVideoFrameCallback` canvas ring buffer (prior art: Frame Sync). A second look-ahead `<video>` cannot share YouTube's MSE source. |
+| Restream mode | Deprioritised. YouTube's ToS bans modifying content and anything beyond personal viewing, and its API policy bans isolating audio and caching. Only viable for content we have rights to. |
+| Mobile | The YouTube app cannot be filtered in place: Android AudioPlaybackCapture copies audio without muting the source. Firefox for Android supports extensions and is the realistic first path. iOS Safari is untested. |
+
+Competitors, policy and model options are in `docs/research/2026-10-19-landscape.md`.

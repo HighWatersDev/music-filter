@@ -17,6 +17,14 @@
 - wasm-bindgen glue calls `new TextDecoder()` at module top level, and AudioWorkletGlobalScope has no `TextDecoder`. A polyfill must be imported first.
 - It hands the compiled `WebAssembly.Module` and the model bytes to the worklet through `processorOptions`, then calls `initSync` inside the worklet.
 
+[WorkAdventure noise-suppression](https://github.com/workadventure/noise-suppression) also runs libDF/tract WASM in an AudioWorklet at 48 kHz, measured at 2.7% of an M4 core and 41 to 71 ms of delay. Read it if the build or worklet wiring gets stuck.
+
+**Already known from a live probe** (Chrome 148, YouTube watch page, 2026-10-19, details in `docs/research/2026-10-19-landscape.md`):
+
+- `extension-url` strategies should PASS. Both `blob-url` strategies should FAIL with an AbortError from YouTube's CSP. The probe still runs all 4 to confirm this with the real model.
+- `performance.now` does not exist in AudioWorkletGlobalScope. The processor falls back to `Date.now`, which has 1 ms resolution, so browser frame times come out in whole milliseconds. The Node benchmark gives the precise numbers.
+- Compiling WASM inside the worklet works only because YouTube allows `'unsafe-eval'`. Prefer the `content-script` compile strategy for v1.
+
 ---
 
 ## Go / no-go gates
@@ -27,9 +35,9 @@ Record every result in `docs/spikes/2026-10-19-worklet-csp-results.md` (Task 10)
 |---|---|
 | G1 Load | At least 1 of the 4 strategies reaches `ready` on a `https://www.youtube.com/watch?v=…` page in Chrome stable |
 | G2 Speed (Node) | Mean frame time ≤ 3 ms for a 10 ms frame on the dev Mac |
-| G3 Real time (browser) | p95 frame time ≤ 2.67 ms (one 128-sample render quantum at 48 kHz) and `overQuantum` ≤ 1% of frames, with `latencyHint: 'interactive'`. If it fails, retry with `'playback'`. Passes only if 5 minutes of playback has no audible crackle. |
+| G3 Real time (browser) | With `Date.now` timing, p95 ≤ 2 ms and `overQuantum` ≤ 1% of frames. `overQuantum` counts frames over 2.67 ms, one 128-sample render quantum at 48 kHz, which at 1 ms resolution means 3 ms or more. Test with `latencyHint: 'interactive'` first and retry with `'playback'` if it fails. Passes only if 5 minutes of playback has no audible crackle. |
 | G4 Sound | On 3 clips (vlog with background music, podcast with music intro, music video), music is clearly reduced and speech stays intelligible. Sung vocals leaking through is expected and does not fail the gate. |
-| G5 Delay | `baseLatency + outputLatency + 10 ms` ≤ 60 ms, and no visible lip-sync drift |
+| G5 Delay | `baseLatency + outputLatency + 40 ms` ≤ 100 ms (40 ms is DeepFilterNet3's algorithmic latency, 125 ms late is the ITU-R BT.1359 detectability limit), and no visible lip-sync drift |
 
 Why G3 uses 2.67 ms and not the 10 ms frame length: the worklet gets a callback every 128 samples (2.67 ms). A 10 ms model frame is processed entirely inside one of those callbacks. A frame that takes 5 ms is "faster than real time" on average but still overruns that single callback, and only the output buffer's slack hides it.
 
