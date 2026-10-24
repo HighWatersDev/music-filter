@@ -88,6 +88,8 @@
     const node = new AudioWorkletNode(context, 'music-filter', {
       numberOfInputs: 1,
       numberOfOutputs: 1,
+      channelCount: 2,
+      channelCountMode: 'explicit',
       outputChannelCount: [2],
       processorOptions: { wasm, modelBytes: assets.modelBytes, attenLimDb: ATTEN_LIM_DB },
     });
