@@ -6,13 +6,16 @@
   const MIN_CLIP_SECONDS = 2;
   const SEPARATOR_TIMEOUT_MS = 20000;
   const SEEK_TIMEOUT_MS = 10000;
+  const SILENCE_PEAK = 1e-4;
+  const MAX_PROCESSED_GAIN = 4;
+  const SOURCE_CHANGE_EVENTS = ['emptied', 'loadstart', 'durationchange'];
   // Debug override for the headless harness only: ?mf_clip_seconds=10
   const clipOverride = Number(new URLSearchParams(location.search).get('mf_clip_seconds'));
   const CLIP_SECONDS = clipOverride > 0 && clipOverride <= 30 ? clipOverride : 30;
 
   const MODELS = {
-    mrx: { label: 'MRX', device: 'wasm' },
-    tiger: { label: 'TIGER', device: 'webgpu' },
+    mrx: { label: 'MRX', device: 'wasm', timeout: { minMs: 120000, msPerClipSecond: 20000 } },
+    tiger: { label: 'TIGER', device: 'webgpu', timeout: { minMs: 600000, msPerClipSecond: 30000 } },
   };
   const MODES = { original: 'Original', removed: 'Music removed' };
 
@@ -22,6 +25,8 @@
   let separator;
   let result;
   let playback;
+  let cancelProcessing;
+  let activeTest;
   let nextJobId = 1;
   const jobs = new Map();
 
@@ -94,6 +99,7 @@
     ui.buttons.original.disabled = !result;
     ui.buttons.removed.disabled = !result;
     ui.buttons.replay.disabled = !result || isBusy;
+    ui.buttons.cancel.style.display = state === 'processing' ? '' : 'none';
     for (const [key, label] of Object.entries(MODES)) {
       ui.buttons[key].style.fontWeight = key === mode ? 'bold' : 'normal';
       ui.buttons[key].textContent = key === mode ? `[${label}]` : label;
@@ -125,10 +131,40 @@
     setTimeout(render, 250);
   }
 
+  function pickPlayer() {
+    return document.querySelector('#movie_player');
+  }
+
+  function isAdShowing() {
+    return pickPlayer()?.classList.contains('ad-showing') ?? false;
+  }
+
+  function watchSourceChange(video, onChange) {
+    const player = pickPlayer();
+    const onEvent = (event) => onChange(`the video changed (${event.type})`);
+    const observer = new MutationObserver(() => {
+      if (isAdShowing()) onChange('an ad started');
+    });
+    for (const type of SOURCE_CHANGE_EVENTS) video.addEventListener(type, onEvent);
+    if (player) observer.observe(player, { attributes: true, attributeFilter: ['class'] });
+    return () => {
+      for (const type of SOURCE_CHANGE_EVENTS) video.removeEventListener(type, onEvent);
+      observer.disconnect();
+    };
+  }
+
+  function processedLevel() {
+    const { video } = graph;
+    const volumeAtRecord = result?.volumeAtRecord ?? 1;
+    if (video.muted || volumeAtRecord === 0) return 0;
+    return Math.min(MAX_PROCESSED_GAIN, Math.max(0, video.volume / volumeAtRecord));
+  }
+
   function setGains(isProcessed) {
+    const level = isProcessed ? processedLevel() : 0;
     rampTo(graph.originalGain.gain, isProcessed ? 0 : 1);
-    rampTo(graph.processedGain.gain, isProcessed ? 1 : 0);
-    graph.processedGainTarget = isProcessed ? 1 : 0;
+    rampTo(graph.processedGain.gain, level);
+    graph.processedGainTarget = level;
   }
 
   function restoreOriginal() {
@@ -168,6 +204,7 @@
     processedGain.connect(context.destination);
     graph = { video, context, originalGain, processedGain, processedGainTarget: 0, recorder };
     video.addEventListener('play', () => context.resume());
+    ui.line('dfn', 'DeepFilterNet panel needs a tab reload after a clip test');
     log('graph', { sampleRate: context.sampleRate });
     return graph;
   }
@@ -187,9 +224,10 @@
     if (data.type === 'error') job.reject(new Error(data.message));
   }
 
-  function connectSeparator() {
+  function connectSeparator(connection) {
     return new Promise((resolve, reject) => {
       const frame = document.createElement('iframe');
+      connection.frame = frame;
       frame.src = chrome.runtime.getURL(SEPARATOR_PAGE);
       frame.tabIndex = -1;
       frame.setAttribute('aria-hidden', 'true');
@@ -221,6 +259,7 @@
             const gpu = data.backends.includes('webgpu') ? `WebGPU ${data.gpu}` : `no WebGPU (${data.gpu})`;
             ui.line('separator', `separator ready: ${gpu}, crossOriginIsolated=${data.crossOriginIsolated}`);
             log('separator-ready', data);
+            connection.port = channel.port1;
             resolve(channel.port1);
           };
           frame.contentWindow.postMessage({ type: 'music-filter:connect' }, new URL(frame.src).origin, [channel.port2]);
@@ -232,11 +271,64 @@
   }
 
   function ensureSeparator() {
-    separator ??= connectSeparator().catch((error) => {
-      separator = undefined;
+    if (separator) return separator.ready;
+    const connection = {};
+    connection.ready = connectSeparator(connection).catch((error) => {
+      if (separator === connection) separator = undefined;
       throw error;
     });
-    return separator;
+    separator = connection;
+    return connection.ready;
+  }
+
+  function resetSeparator(reason) {
+    const connection = separator;
+    separator = undefined;
+    activeTest = undefined;
+    if (connection) {
+      connection.port?.close();
+      connection.frame?.remove();
+    }
+    for (const job of jobs.values()) job.reject(new Error(reason));
+    jobs.clear();
+    ui.line('separator');
+    ui.line('prep');
+    log('separator-reset', { reason });
+  }
+
+  function separateWithDeadline(spec, message, transfer) {
+    const clipSeconds = message.left.length / message.sampleRate;
+    const timeoutMs = Math.max(spec.timeout.minMs, spec.timeout.msPerClipSecond * clipSeconds);
+    return new Promise((resolve, reject) => {
+      const settle = () => {
+        clearTimeout(timer);
+        cancelProcessing = undefined;
+      };
+      const stop = (reason) => {
+        settle();
+        resetSeparator(reason);
+        reject(new Error(reason));
+      };
+      const timer = setTimeout(
+        () => stop(`${spec.label} separation took longer than ${seconds(timeoutMs)}, separator reset`),
+        timeoutMs,
+      );
+      cancelProcessing = () => stop(`${spec.label} separation cancelled, separator reset`);
+      ensureSeparator()
+        .then((port) =>
+          request(port, message, (status) => ui.line('main', `Processing ${spec.label}: ${describeStatus(status)}`), transfer),
+        )
+        .then(
+          (done) => {
+            settle();
+            resolve(done);
+          },
+          (error) => {
+            settle();
+            reject(error);
+          },
+        );
+    });
   }
 
   function request(port, message, onStatus, transfer = []) {
@@ -279,20 +371,28 @@
       const right = [];
       let received = 0;
       const startTime = video.currentTime;
+      const volumeAtRecord = video.muted ? 0 : video.volume;
       const timer = setInterval(() => {
         const secondsLeft = Math.ceil((frames - received) / context.sampleRate);
         ui.line('main', `Recording for ${label}: ${secondsLeft} s left (keep playing)`);
       }, 250);
+      const abort = (reason) => {
+        recorder.port.postMessage({ type: 'stop' });
+        cleanup();
+        reject(new Error(`recording stopped because ${reason}. Click Test again.`));
+      };
+      const interruptions = {
+        pause: () => abort('the video paused'),
+        seeking: () => abort('the video seeked'),
+        waiting: () => abort('the video stalled to buffer'),
+        ratechange: () => abort('the playback speed changed'),
+      };
+      const stopWatching = watchSourceChange(video, abort);
       const cleanup = () => {
         clearInterval(timer);
         recorder.port.onmessage = null;
-        video.removeEventListener('pause', onInterrupt);
-        video.removeEventListener('seeking', onInterrupt);
-      };
-      const onInterrupt = () => {
-        recorder.port.postMessage({ type: 'stop' });
-        cleanup();
-        reject(new Error('recording stopped because the video paused or seeked. Click Test again.'));
+        for (const [type, listener] of Object.entries(interruptions)) video.removeEventListener(type, listener);
+        stopWatching();
       };
       recorder.port.onmessage = ({ data }) => {
         if (data.type !== 'chunk') return;
@@ -301,13 +401,26 @@
         received += data.left.length;
         if (!data.isLast) return;
         cleanup();
-        resolve({ left: concat(left, received), right: concat(right, received), startTime, sampleRate: context.sampleRate });
+        resolve({
+          left: concat(left, received),
+          right: concat(right, received),
+          startTime,
+          volumeAtRecord,
+          sampleRate: context.sampleRate,
+        });
       };
-      video.addEventListener('pause', onInterrupt);
-      video.addEventListener('seeking', onInterrupt);
+      for (const [type, listener] of Object.entries(interruptions)) video.addEventListener(type, listener);
       recorder.port.postMessage({ type: 'start', frames });
       log('record-start', { startTime, frames });
     });
+  }
+
+  function peakOf(...channels) {
+    let peak = 0;
+    for (const channel of channels) {
+      for (const sample of channel) peak = Math.max(peak, Math.abs(sample));
+    }
+    return peak;
   }
 
   function seekTo(video, time) {
@@ -346,6 +459,7 @@
     };
     const finish = (reason) => {
       for (const [type, listener] of Object.entries(listeners)) video.removeEventListener(type, listener);
+      stopWatching();
       stopBuffer();
       playback = undefined;
       setGains(false);
@@ -372,8 +486,12 @@
       timeupdate: () => {
         if (video.currentTime >= endTime) finish('finished');
       },
+      volumechange: () => {
+        if (mode === 'removed') setGains(true);
+      },
     };
     for (const [type, listener] of Object.entries(listeners)) video.addEventListener(type, listener);
+    const stopWatching = watchSourceChange(video, (reason) => finish(`stopped (${reason})`));
     playback = { stop: () => finish('stopped') };
 
     setGains(mode === 'removed');
@@ -396,6 +514,8 @@
     const spec = MODELS[modelKey];
     const video = pickVideo();
     if (!video) throw new Error('no <video> on this page');
+    if (isAdShowing()) throw new Error('Wait for the ad to finish');
+    if (video.playbackRate !== 1) throw new Error(`playback speed is ${video.playbackRate}x. Set it to Normal (1x) and try again.`);
 
     playback?.stop();
     ui.line('error');
@@ -404,28 +524,33 @@
     await graph.context.resume();
     if (video.paused) await video.play();
 
+    const test = {};
+    activeTest = test;
+    const showPrep = (text) => {
+      if (activeTest === test) ui.line('prep', text);
+    };
     const preparing = ensureSeparator().then((port) =>
       request(port, { type: 'prepare', model: modelKey, device: spec.device }, (status) =>
-        ui.line('prep', `${spec.label}: ${describeStatus(status)}`),
+        showPrep(`${spec.label}: ${describeStatus(status)}`),
       ),
     );
     preparing.then(
-      (ready) => ui.line('prep', `${spec.label} ready on ${ready.device}, weights ${ready.weightsSource}`),
-      (error) => ui.line('prep', `${spec.label} prepare failed: ${error.message}`),
+      (ready) => showPrep(`${spec.label} ready on ${ready.device}, weights ${ready.weightsSource}`),
+      (error) => showPrep(`${spec.label} prepare failed: ${error.message}`),
     );
 
     setState('recording');
     const clip = await record(spec.label, CLIP_SECONDS);
     const recordedAt = performance.now();
-    log('record-end', { frames: clip.left.length, startTime: clip.startTime });
+    const peak = peakOf(clip.left, clip.right);
+    log('record-end', { frames: clip.left.length, startTime: clip.startTime, peak, volumeAtRecord: clip.volumeAtRecord });
+    if (peak < SILENCE_PEAK) throw new Error('Recorded silence. Unmute the video and try again.');
 
     setState('processing');
     ui.line('main', `Processing ${spec.label}...`);
-    const port = await ensureSeparator();
-    const done = await request(
-      port,
+    const done = await separateWithDeadline(
+      spec,
       { type: 'separate', model: modelKey, device: spec.device, sampleRate: clip.sampleRate, left: clip.left, right: clip.right },
-      (status) => ui.line('main', `Processing ${spec.label}: ${describeStatus(status)}`),
       [clip.left.buffer, clip.right.buffer],
     );
     const waitMs = performance.now() - recordedAt;
@@ -434,7 +559,7 @@
     const buffer = new AudioBuffer({ numberOfChannels: 2, length: done.left.length, sampleRate: done.sampleRate });
     buffer.copyToChannel(done.left, 0);
     buffer.copyToChannel(done.right, 1);
-    result = { buffer, startTime: clip.startTime, model: done.model };
+    result = { buffer, startTime: clip.startTime, volumeAtRecord: clip.volumeAtRecord, model: done.model };
     const { left, right, ...summary } = done;
     log('separated', { ...summary, waitMs });
     ui.line('result', describeResult(done, waitMs));
@@ -450,6 +575,7 @@
 
   const run = (action) =>
     action().catch((error) => {
+      activeTest = undefined;
       restoreOriginal();
       setState(result ? 'ready' : 'idle');
       ui.line('main', 'Stopped, original audio restored.');
@@ -462,6 +588,7 @@
   ui.button('original', MODES.original, () => selectMode('original'));
   ui.button('removed', MODES.removed, () => selectMode('removed'));
   ui.button('replay', 'Replay', () => run(play));
+  ui.button('cancel', 'Cancel', () => cancelProcessing?.());
   ui.line('main', `Clip test: play a video, then click Test to record the next ${CLIP_SECONDS} s.`);
   render();
 })();

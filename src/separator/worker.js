@@ -29,11 +29,23 @@ async function describeGpu() {
 
 async function fetchWeights(model, report) {
   const url = weightsUrl(model);
+  const expected = models[model].sha256;
   const store = await caches.open(CACHE_NAME);
-  const source = (await store.match(url)) ? 'cache' : 'download';
   const startedAt = performance.now();
+
+  const cached = await store.match(url);
+  if (cached) {
+    const bytes = new Uint8Array(await cached.arrayBuffer());
+    if ((await sha256Hex(bytes)) === expected) {
+      report({ stage: 'download', loaded: bytes.length, total: bytes.length });
+      return { bytes, source: 'cache', downloadMs: performance.now() - startedAt };
+    }
+    await store.delete(url);
+  }
+
   let lastReport = 0;
   const bytes = await fetchModel(url, {
+    cache: false,
     progress: ({ loaded, total }) => {
       const now = performance.now();
       if (now - lastReport < DOWNLOAD_REPORT_MS && loaded !== total) return;
@@ -41,11 +53,13 @@ async function fetchWeights(model, report) {
       report({ stage: 'download', loaded, total });
     },
   });
-  if ((await sha256Hex(bytes)) !== models[model].sha256) {
-    await store.delete(url);
-    throw new Error(`${model} weights failed the SHA-256 check, cache entry cleared, try again`);
+  if ((await sha256Hex(bytes)) !== expected) {
+    throw new Error(`${model} weights downloaded from ${url} failed the SHA-256 check and were not cached`);
   }
-  return { bytes, source, downloadMs: performance.now() - startedAt };
+  store
+    .put(url, new Response(bytes))
+    .catch((error) => console.warn(`[separator] ${model} weights not cached: ${error.message}`));
+  return { bytes, source: cached ? 'download (cached copy was corrupt)' : 'download', downloadMs: performance.now() - startedAt };
 }
 
 async function createSession(model, requestedDevice, report) {
@@ -100,7 +114,7 @@ async function runSeparation({ id, model, device: requestedDevice, sampleRate, l
   const durationS = left.length / sampleRate;
   const separateStart = performance.now();
   report({ stage: 'separate', chunk: 0, totalChunks: null, elapsedMs: 0 });
-  const { stems } = await separate([left, right], {
+  const { residual } = await separate([left, right], {
     model,
     sampleRate,
     targets: ['music'],
@@ -110,11 +124,7 @@ async function runSeparation({ id, model, device: requestedDevice, sampleRate, l
   });
   const separateMs = performance.now() - separateStart;
 
-  const [musicLeft, musicRight] = stems.music;
-  for (let i = 0; i < left.length; i++) {
-    left[i] -= musicLeft[i];
-    right[i] -= musicRight[i];
-  }
+  const [withoutMusicLeft, withoutMusicRight] = residual;
 
   post(
     {
@@ -133,10 +143,10 @@ async function runSeparation({ id, model, device: requestedDevice, sampleRate, l
       durationS,
       rtf: separateMs / 1000 / durationS,
       sampleRate,
-      left,
-      right,
+      left: withoutMusicLeft,
+      right: withoutMusicRight,
     },
-    [left.buffer, right.buffer],
+    [withoutMusicLeft.buffer, withoutMusicRight.buffer],
   );
 }
 

@@ -2,9 +2,10 @@ const CONNECT = 'music-filter:connect';
 
 const transferablesOf = (data) => [data?.left?.buffer, data?.right?.buffer].filter(Boolean);
 
-window.addEventListener('message', (event) => {
+function handleConnect(event) {
   const [port] = event.ports;
-  if (event.data?.type !== CONNECT || !port) return;
+  if (event.source !== window.parent || event.data?.type !== CONNECT || !port) return;
+  window.removeEventListener('message', handleConnect);
 
   let worker;
   try {
@@ -18,4 +19,6 @@ window.addEventListener('message', (event) => {
     port.postMessage({ type: 'error', message: `separator worker error: ${event.message || 'failed to load'}` });
   port.onmessage = ({ data }) => worker.postMessage(data, transferablesOf(data));
   worker.postMessage({ type: 'connect', wasmPaths: chrome.runtime.getURL('dist/ort/') });
-});
+}
+
+window.addEventListener('message', handleConnect);
