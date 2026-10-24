@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --test test/",
+    "test": "node --test 'test/*.test.js'",
     "build:wasm": "bash scripts/build-wasm.sh",
     "build:worklet": "esbuild src/worklet/processor.js --bundle --format=esm --outfile=extension/dist/processor.js",
     "bench": "node bench/node-bench.mjs"
