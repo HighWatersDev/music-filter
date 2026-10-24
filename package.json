@@ -1,0 +1,14 @@
+{
+  "name": "music-filter",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/",
+    "build:wasm": "bash scripts/build-wasm.sh",
+    "build:worklet": "esbuild src/worklet/processor.js --bundle --format=esm --outfile=extension/dist/processor.js",
+    "bench": "node bench/node-bench.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.0"
+  }
+}
