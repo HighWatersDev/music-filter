@@ -51,7 +51,12 @@
       fetch(chrome.runtime.getURL(PROCESSOR_PATH)).then((r) => r.text()),
       fetch(chrome.runtime.getURL(WASM_PATH)).then((r) => r.arrayBuffer()),
       fetch(chrome.runtime.getURL(MODEL_PATH)).then((r) => r.arrayBuffer()),
-    ]).then(([processorSource, wasmBytes, modelBytes]) => ({ processorSource, wasmBytes, modelBytes }));
+    ])
+      .then(([processorSource, wasmBytes, modelBytes]) => ({ processorSource, wasmBytes, modelBytes }))
+      .catch((error) => {
+        assetsPromise = undefined;
+        throw error;
+      });
     return assetsPromise;
   }
 
@@ -132,11 +137,35 @@
   }
 
   let attached;
+  let attaching;
 
-  async function attach() {
-    if (attached) return;
-    const video = document.querySelector('video');
-    if (!video) return overlay.set('status', 'no <video> on this page');
+  function pickVideo() {
+    const mainPlayer = document.querySelector('#movie_player video.html5-main-video');
+    if (mainPlayer) return { video: mainPlayer, source: 'main-player' };
+    const firstOnPage = document.querySelector('video');
+    return firstOnPage ? { video: firstOnPage, source: 'first-on-page' } : undefined;
+  }
+
+  function attach() {
+    if (attached) return Promise.resolve();
+    attaching ??= attachVideo().finally(() => {
+      attaching = undefined;
+    });
+    return attaching;
+  }
+
+  function formatTotals(totals) {
+    return (
+      `totals frames=${totals.frames} overQuantum=${totals.overQuantum} (${totals.overQuantumPct.toFixed(2)}%) ` +
+      `overBudget=${totals.overBudget} worstP95=${totals.worstP95Ms.toFixed(2)}ms ` +
+      `worstMax=${totals.worstMaxMs.toFixed(2)}ms output=${totals.outputLatencyMs.toFixed(1)}ms`
+    );
+  }
+
+  async function attachVideo() {
+    const picked = pickVideo();
+    if (!picked) return overlay.set('status', 'no <video> on this page');
+    const { video, source } = picked;
 
     const strategy = JSON.parse(sessionStorage.getItem(STRATEGY_KEY) ?? 'null') ?? (await probe());
     if (!strategy) return overlay.set('status', 'no working strategy, video left untouched');
@@ -154,26 +183,52 @@
       return overlay.set('status', `attach failed, video left untouched: ${error.message}`);
     }
 
-    context.createMediaElementSource(video).connect(node).connect(context.destination);
+    try {
+      context.createMediaElementSource(video).connect(node).connect(context.destination);
+    } catch (error) {
+      await context.close();
+      return overlay.set('status', `attach failed at createMediaElementSource (video=${source}): ${error.message}`);
+    }
+
+    const totals = { frames: 0, overQuantum: 0, overBudget: 0, worstP95Ms: 0, worstMaxMs: 0 };
     node.port.onmessage = ({ data }) => {
       if (data.type === 'error') {
         console.error('[music-filter] error', JSON.stringify(data));
         overlay.set('error', `ERROR ${data.stage}: ${data.message} (passing original audio through)`);
+        overlay.set('bypass', 'FAILED, original audio');
         return;
       }
       if (data.type !== 'stats') return;
+      if (!video.isConnected) overlay.set('error', 'video element replaced, reload the tab to filter again');
+
       console.log('[music-filter] stats', JSON.stringify(data));
       overlay.set(
         'stats',
         `frames=${data.count} mean=${data.meanMs.toFixed(2)}ms p95=${data.p95Ms.toFixed(2)}ms ` +
           `max=${data.maxMs.toFixed(2)}ms overQuantum=${data.overQuantum} overBudget=${data.overBudget}`,
       );
+
+      if (!video.paused && !video.ended) {
+        totals.frames += data.count;
+        totals.overQuantum += data.overQuantum;
+        totals.overBudget += data.overBudget;
+        totals.worstP95Ms = Math.max(totals.worstP95Ms, data.p95Ms);
+        totals.worstMaxMs = Math.max(totals.worstMaxMs, data.maxMs);
+      }
+      const summary = {
+        ...totals,
+        overQuantumPct: totals.frames ? (100 * totals.overQuantum) / totals.frames : 0,
+        outputLatencyMs: context.outputLatency * 1000,
+      };
+      console.log('[music-filter] totals', JSON.stringify(summary));
+      overlay.set('totals', formatTotals(summary));
     };
-    attached = { node, isBypassed: false };
+    video.addEventListener('play', () => context.resume());
+    attached = { node, video, isBypassed: false };
 
     overlay.set(
       'status',
-      `attached ${strategy.loader}/${strategy.compileIn} latencyHint=${latencyHint} ` +
+      `attached ${strategy.loader}/${strategy.compileIn} video=${source} latencyHint=${latencyHint} ` +
         `base=${(context.baseLatency * 1000).toFixed(1)}ms output=${(context.outputLatency * 1000).toFixed(1)}ms ` +
         `frame=${ready.frameLength} clock=${ready.clock}`,
     );
@@ -193,10 +248,17 @@
   }
 
   const HOTKEYS = { KeyL: probe, KeyM: attach, KeyB: toggleBypass, KeyH: toggleLatencyHint };
+  const EDITABLE_TAGS = new Set(['INPUT', 'TEXTAREA', 'SELECT']);
+
+  function isEditableTarget(event) {
+    const target = event.composedPath()[0];
+    return Boolean(target?.isContentEditable) || EDITABLE_TAGS.has(target?.tagName);
+  }
 
   document.addEventListener(
     'keydown',
     (event) => {
+      if (event.repeat || isEditableTarget(event)) return;
       const action = event.altKey && event.shiftKey ? HOTKEYS[event.code] : undefined;
       if (!action) return;
       event.preventDefault();
