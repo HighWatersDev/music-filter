@@ -14,7 +14,7 @@ All runs below were automated and headless. Headless Chrome uses a fake audio ou
 | Gate | Result | Evidence |
 |---|---|---|
 | G1 Load | **PASS** | Both `extension-url` strategies reach `ready` on a YouTube watch page. Both `blob-url` strategies are blocked by YouTube's allowlist `script-src`. |
-| G2 Speed (Node) | **PASS** | Mean 0.50 ms per 10 ms frame (RTF 0.05), p95 0.58 ms. The only slow frame is the first warm-up call (17 ms). |
+| G2 Speed | **PASS** | Node: mean 0.50 ms per 10 ms frame on synthetic sine plus noise, which probably takes DeepFilterNet's cheap low-SNR path. Browser on real audio: mean 1.09 ms. Both are under the 3 ms limit. Treat the browser figure as the real one. |
 | G3 Real time (browser) | **Provisional pass, needs listening** | Control page, 5 min real audio, `interactive`: worst p95 2 ms, overQuantum 0.28%. YouTube real audio was limited to about 33 s per run (see notes). Interactive passed. One playback run failed (p95 3 ms, 2.0%). |
 | G4 Sound | **Not run** | Needs a person. Expect music-only stretches to come out as true silence. |
 | G5 Delay | **Pass for `interactive` (headless numbers)** | 5.3 + 32.0 + 40 = 77.3 ms. `playback` gives 109 to 117 ms and fails. Lip-sync not checked. |
@@ -81,7 +81,16 @@ Browser runs (stats windows are 100 frames, about 1 s each):
 
 ## Listening scores
 
-To be filled in by a person. Load `extension/` unpacked in Chrome after `npm run build:worklet`, open a watch page, click the page, press Alt+Shift+M while it plays, and toggle Alt+Shift+B.
+To be filled in by a person, on wired headphones or speakers. Bluetooth adds its own delay.
+
+1. Run `npm run build:worklet`.
+2. Load `extension/` unpacked in Chrome.
+3. Open a watch page and click the page.
+4. Press Alt+Shift+M while it plays. The status line should say `video=main-player`.
+5. Toggle Alt+Shift+B to compare filtered and original audio.
+6. Copy the `totals` overlay line at the end for G3. It only counts time while the video is playing.
+
+Bypass has the same 40 ms delay as filtering, so judge lip-sync against a fresh reload with nothing attached.
 
 | Clip | Speech clarity 1-5 | Music left 1-5 | Crackles? | Lip-sync OK? | Notes |
 |---|---|---|---|---|---|
