@@ -1,25 +1,38 @@
 import './text-codec-polyfill.js';
 import { initSync, df_create, df_get_frame_length, df_process_frame } from '../../vendor/df/df.js';
+import { DelayLine } from './delay-line.js';
 import { FrameAdapter } from './frame-adapter.js';
 import { FrameStats } from './frame-stats.js';
 
 const REPORT_EVERY_FRAMES = 100;
 const RENDER_QUANTUM = 128;
+// Measured at 48 kHz by cross-correlating input and df_process_frame output for impulses and voiced
+// bursts (attenLimDb 1, 6 and 100). With attenLimDb 0 DeepFilterNet returns the input undelayed.
+const MODEL_DELAY_SAMPLES = 1440;
 
 const clock =
   typeof performance === 'object' && typeof performance.now === 'function'
     ? { name: 'performance.now', now: () => performance.now() }
     : { name: 'Date.now', now: () => Date.now() };
 
+function isAllFinite(samples) {
+  for (let i = 0; i < samples.length; i++) {
+    if (!Number.isFinite(samples[i])) return false;
+  }
+  return true;
+}
+
 class MusicFilterProcessor extends AudioWorkletProcessor {
   constructor(options) {
     super();
     this.isBypassed = false;
     this.hasFailed = false;
+    this.hasRenderFailed = false;
     this.mono = null;
+    this.renderDry = null;
     this.reportedStages = new Set();
     this.port.onmessage = ({ data }) => {
-      if (data.type === 'bypass' && !this.hasFailed) this.isBypassed = Boolean(data.value);
+      if (data?.type === 'bypass') this.isBypassed = Boolean(data.value);
     };
 
     try {
@@ -27,12 +40,22 @@ class MusicFilterProcessor extends AudioWorkletProcessor {
       initSync(wasm);
       this.handle = df_create(new Uint8Array(modelBytes), attenLimDb);
       const frameLength = df_get_frame_length(this.handle);
+      const modelDelay = attenLimDb === 0 ? 0 : MODEL_DELAY_SAMPLES;
       this.stats = new FrameStats({
         budgetMs: (frameLength / sampleRate) * 1000,
         quantumMs: (RENDER_QUANTUM / sampleRate) * 1000,
       });
+      this.dryDelay = new DelayLine(modelDelay);
+      this.dryFrame = new Float32Array(frameLength);
       this.adapter = new FrameAdapter(frameLength, (frame) => this.processFrame(frame));
-      this.port.postMessage({ type: 'ready', frameLength, sampleRate, clock: clock.name });
+      this.renderDelay = new DelayLine(this.adapter.latencySamples + modelDelay);
+      this.port.postMessage({
+        type: 'ready',
+        frameLength,
+        sampleRate,
+        clock: clock.name,
+        latencySamples: this.renderDelay.delaySamples,
+      });
     } catch (error) {
       this.reportError('init', error);
     }
@@ -45,21 +68,31 @@ class MusicFilterProcessor extends AudioWorkletProcessor {
   }
 
   processFrame(frame) {
-    if (this.isBypassed) return frame;
+    const dry = this.dryDelay.process(frame, this.dryFrame);
+    if (this.hasFailed) return dry;
+
+    let processed;
     try {
       const start = clock.now();
-      const processed = df_process_frame(this.handle, frame);
+      processed = df_process_frame(this.handle, frame);
       this.stats.record(clock.now() - start);
-      if (this.stats.count >= REPORT_EVERY_FRAMES) {
-        this.port.postMessage({ type: 'stats', ...this.stats.drain() });
-      }
-      return processed;
     } catch (error) {
-      this.reportError('process', error);
-      this.hasFailed = true;
-      this.isBypassed = true;
-      return frame;
+      this.failProcessing(error);
+      return dry;
     }
+    if (!isAllFinite(processed)) {
+      this.failProcessing(new Error('df_process_frame returned a non-finite sample'));
+      return dry;
+    }
+    if (this.stats.count >= REPORT_EVERY_FRAMES) {
+      this.port.postMessage({ type: 'stats', ...this.stats.drain() });
+    }
+    return this.isBypassed ? dry : processed;
+  }
+
+  failProcessing(error) {
+    this.reportError('process', error);
+    this.hasFailed = true;
   }
 
   toMono(input, length) {
@@ -80,6 +113,11 @@ class MusicFilterProcessor extends AudioWorkletProcessor {
     }
   }
 
+  delayRenderInput(mono) {
+    if (this.renderDry?.length !== mono.length) this.renderDry = new Float32Array(mono.length);
+    return this.renderDelay.process(mono, this.renderDry);
+  }
+
   process(inputs, outputs) {
     const input = inputs[0] ?? [];
     const output = outputs[0];
@@ -90,12 +128,23 @@ class MusicFilterProcessor extends AudioWorkletProcessor {
       return true;
     }
 
+    let dry = null;
     try {
-      this.adapter.process(this.toMono(input, input[0]?.length ?? output[0].length), output[0]);
+      const mono = this.toMono(input, input[0]?.length ?? output[0].length);
+      dry = this.delayRenderInput(mono);
+      if (this.hasRenderFailed) {
+        for (const channel of output) channel.set(dry.subarray(0, channel.length));
+        return true;
+      }
+      this.adapter.process(mono, output[0]);
       for (let channel = 1; channel < output.length; channel++) output[channel].set(output[0]);
     } catch (error) {
       this.reportError('render', error);
-      this.passThrough(input, output);
+      this.hasRenderFailed = true;
+      for (const channel of output) {
+        if (dry) channel.set(dry.subarray(0, channel.length));
+        else channel.fill(0);
+      }
     }
     return true;
   }
