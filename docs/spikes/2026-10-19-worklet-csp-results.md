@@ -85,9 +85,9 @@ To be filled in by a person, on wired headphones or speakers. Bluetooth adds its
 
 1. Run `npm run build:worklet`.
 2. Load `extension/` unpacked in Chrome.
-3. Open a watch page and click the page.
-4. Press Alt+Shift+M while it plays. The status line should say `video=main-player`.
-5. Toggle Alt+Shift+B to compare filtered and original audio.
+3. Open a watch page and start playback.
+4. Click **Attach** in the panel at the bottom left. The status line should say `video=main-player`.
+5. Click **Bypass** to compare filtered and original audio.
 6. Copy the `totals` overlay line at the end for G3. It only counts time while the video is playing.
 
 Bypass has the same 40 ms delay as filtering, so judge lip-sync against a fresh reload with nothing attached.

@@ -15,27 +15,53 @@
   ];
 
   const overlay = (() => {
-    const box = document.createElement('pre');
-    Object.assign(box.style, {
+    const panel = document.createElement('div');
+    Object.assign(panel.style, {
       position: 'fixed',
-      top: '8px',
-      right: '8px',
+      bottom: '8px',
+      left: '8px',
       zIndex: '2147483647',
-      margin: '0',
       padding: '8px',
       maxWidth: '520px',
-      whiteSpace: 'pre-wrap',
       font: '12px/1.4 ui-monospace, monospace',
       background: 'rgba(0, 0, 0, 0.85)',
       color: '#7CFC00',
-      pointerEvents: 'none',
+      borderRadius: '6px',
     });
+    const buttons = document.createElement('div');
+    Object.assign(buttons.style, { display: 'flex', gap: '6px', marginBottom: '6px' });
+    const text = document.createElement('pre');
+    Object.assign(text.style, { margin: '0', whiteSpace: 'pre-wrap', font: 'inherit' });
+    panel.append(buttons, text);
+
     const lines = new Map();
+    const mount = () => {
+      if (!panel.isConnected) document.documentElement.append(panel);
+    };
     return {
-      set(key, text) {
-        lines.set(key, text);
-        box.textContent = [...lines.values()].join('\n');
-        if (!box.isConnected) document.documentElement.append(box);
+      set(key, value) {
+        lines.set(key, value);
+        text.textContent = [...lines.values()].join('\n');
+        mount();
+      },
+      addButton(label, onClick) {
+        const button = document.createElement('button');
+        button.textContent = label;
+        Object.assign(button.style, {
+          font: 'inherit',
+          padding: '4px 8px',
+          cursor: 'pointer',
+          background: '#1f1f1f',
+          color: '#7CFC00',
+          border: '1px solid #7CFC00',
+          borderRadius: '4px',
+        });
+        button.addEventListener('click', (event) => {
+          event.stopPropagation();
+          onClick();
+        });
+        buttons.append(button);
+        mount();
       },
     };
   })();
@@ -255,7 +281,9 @@
     return Boolean(target?.isContentEditable) || EDITABLE_TAGS.has(target?.tagName);
   }
 
-  document.addEventListener(
+  const run = (action) => action().catch((error) => overlay.set('status', `error: ${error.message}`));
+
+  window.addEventListener(
     'keydown',
     (event) => {
       if (event.repeat || isEditableTarget(event)) return;
@@ -263,10 +291,17 @@
       if (!action) return;
       event.preventDefault();
       event.stopPropagation();
-      action().catch((error) => overlay.set('status', `error: ${error.message}`));
+      run(action);
     },
     true,
   );
 
-  overlay.set('help', 'music-filter spike: Alt+Shift+L probe, M attach, B bypass, H latency hint');
+  overlay.addButton('Probe', () => run(probe));
+  overlay.addButton('Attach', () => run(attach));
+  overlay.addButton('Bypass', () => run(toggleBypass));
+  overlay.addButton('Latency', () => run(toggleLatencyHint));
+  overlay.set(
+    'help',
+    `music-filter spike. Play the video, then click Attach. Latency hint: ${sessionStorage.getItem(LATENCY_KEY) ?? 'interactive'}`,
+  );
 })();
