@@ -69,7 +69,7 @@ Expected: Node `v24.x`. If git commands fail with an Xcode licence error, prefix
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --test test/",
+    "test": "node --test 'test/*.test.js'",
     "build:wasm": "bash scripts/build-wasm.sh",
     "build:worklet": "esbuild src/worklet/processor.js --bundle --format=esm --outfile=extension/dist/processor.js",
     "bench": "node bench/node-bench.mjs"
