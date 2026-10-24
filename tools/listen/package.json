@@ -1,0 +1,9 @@
+{
+  "name": "music-filter-listen",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@audio/neural-separate": "0.7.0",
+    "onnxruntime-node": "1.30.0"
+  }
+}
