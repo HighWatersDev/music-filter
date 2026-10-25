@@ -1,4 +1,4 @@
-import { FrameDecoder } from './frame-decoder.js';
+import { FrameDecoder, isSameDecoderConfig } from './frame-decoder.js';
 import { PcmTimeline } from './pcm-timeline.js';
 import { addRange, contiguousEnd, trimBefore } from './ranges.js';
 import { WebmDemuxer } from './webm-demuxer.js';
@@ -161,7 +161,8 @@ export class StreamEngine {
       if (init) {
         if (this.decoder && !this.decoder.isReady) return;
         this.packets.shift();
-        this.configureDecoder(init);
+        if (this.decoder && isSameDecoderConfig(this.decoder.init, init)) this.decoder.markJoin();
+        else this.configureDecoder(init);
         continue;
       }
       if (!this.decoder?.isReady || this.frameSample(frame) >= this.decodeLimit()) return;

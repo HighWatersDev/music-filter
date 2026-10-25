@@ -167,23 +167,59 @@ test('streaming in 2 KB chunks gives windows that each add at least the minimum 
   assert.ok(windows.length <= 6, `${windows.length} windows`);
 });
 
-test('a re-sent init mid-stream leaves a pre-roll hole that processing continues across', async () => {
-  const clusters = [];
-  for (let i = 0; i + 4 <= bytes.length; i++) {
-    if (bytes[i] === 0x1f && bytes[i + 1] === 0x43 && bytes[i + 2] === 0xb6 && bytes[i + 3] === 0x75) clusters.push(i);
+function clusterOffsets(data) {
+  const offsets = [];
+  for (let i = 0; i + 4 <= data.length; i++) {
+    if (data[i] === 0x1f && data[i + 1] === 0x43 && data[i + 2] === 0xb6 && data[i + 3] === 0x75) offsets.push(i);
   }
+  return offsets;
+}
+
+test('two concatenated segments with the same Opus parameters decode with no hole at the join', async () => {
+  const clusters = clusterOffsets(bytes);
   const { engine } = startEngine();
   engine.setPlayhead(0, true);
   engine.pushChunk(bytes.subarray(0, clusters[1]));
   await settle(engine);
+  const decoder = engine.decoder;
   engine.pushChunk(bytes.subarray(0, clusters[0]));
   engine.pushChunk(bytes.subarray(clusters[1]));
   await settle(engine);
-  assert.equal(engine.timeline.ranges.length, 2);
-  const [[, holeStart], [holeEnd]] = engine.timeline.ranges;
-  assert.ok(holeEnd - holeStart >= 3840 && holeEnd - holeStart <= 3840 + 48);
+  assert.ok(engine.decoder === decoder, "decoder was replaced");
+  assert.equal(engine.timeline.ranges.length, 1);
   assert.equal(engine.processed.length, 1);
-  assert.ok(engine.processed[0][1] > holeEnd + 48000);
+  assert.ok(engine.processed[0][1] > 10 * 48000);
+});
+
+test('two separately encoded segments joined with a re-sent init leave no hole', async () => {
+  const joined = new Uint8Array(readFileSync(new URL('./fixtures/tone-join-6s.webm', import.meta.url)));
+  const { engine } = startEngine({ separate: async (left, right) => [left, right] });
+  engine.setPlayhead(0, true);
+  engine.pushChunk(joined);
+  await settle(engine);
+  assert.equal(engine.timeline.ranges.length, 1, JSON.stringify(engine.timeline.ranges));
+  const [[start, end]] = engine.timeline.ranges;
+  assert.ok(start === 0 && end >= 5.99 * 48000);
+});
+
+test('a segment with a different Opus configuration gets a new decoder', async () => {
+  const clusters = clusterOffsets(bytes);
+  const inits = [];
+  const { engine } = startEngine();
+  const handleInit = engine.handleInit.bind(engine);
+  engine.handleInit = (init) => {
+    inits.push(init);
+    handleInit(init);
+  };
+  engine.pushChunk(bytes.subarray(0, clusters[1]));
+  await settle(engine);
+  const decoder = engine.decoder;
+  const codecPrivate = inits[0].codecPrivate.slice();
+  codecPrivate[10] += 1;
+  engine.handleInit({ ...inits[0], codecPrivate });
+  await settle(engine);
+  assert.ok(engine.decoder !== decoder, "decoder was kept");
+  assert.equal(engine.decoder.preSkip, inits[0].codecPrivate[10] + 1 + inits[0].codecPrivate[11] * 256);
 });
 
 test('a separator that throws synchronously reports an error instead of wedging the engine', async () => {

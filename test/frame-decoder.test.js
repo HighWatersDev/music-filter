@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { WebmDemuxer } from '../src/pipeline/webm-demuxer.js';
 import { parseOpusHead } from '../src/pipeline/opus-head.js';
-import { FrameDecoder } from '../src/pipeline/frame-decoder.js';
+import { FrameDecoder, isSameDecoderConfig } from '../src/pipeline/frame-decoder.js';
 
 function demuxFixture() {
   const bytes = new Uint8Array(readFileSync(new URL('./fixtures/tone-12s.webm', import.meta.url)));
@@ -97,4 +97,54 @@ test('DiscardPadding trims the end for positive values and the start for negativ
   assert.equal(start.startSample, expected + 960 + 240);
   assert.equal(start.channelData[0].length, 960 - 240);
   decoder.free();
+});
+
+test('isSameDecoderConfig compares codec, channels and OpusHead bytes', () => {
+  const { init } = demuxFixture();
+  assert.equal(isSameDecoderConfig(init, { ...init, codecPrivate: init.codecPrivate.slice() }), true);
+  assert.equal(isSameDecoderConfig(init, { ...init, channels: 1 }), false);
+  assert.equal(isSameDecoderConfig(init, { ...init, codecId: 'A_VORBIS' }), false);
+  const changed = init.codecPrivate.slice();
+  changed[10] += 1;
+  assert.equal(isSameDecoderConfig(init, { ...init, codecPrivate: changed }), false);
+  assert.equal(isSameDecoderConfig(init, { ...init, codecPrivate: null }), false);
+  const bare = { ...init, codecPrivate: null };
+  assert.equal(isSameDecoderConfig(bare, { ...bare }), true);
+  assert.equal(isSameDecoderConfig(bare, { ...bare, codecDelayNs: bare.codecDelayNs + 1 }), false);
+  assert.equal(isSameDecoderConfig(null, init), false);
+});
+
+test('after a join, a frame near the end of the decoded audio continues without pre-roll and skips the overlap', async () => {
+  const { init, frames } = demuxFixture();
+  const decoder = new FrameDecoder();
+  await decoder.configure(init);
+  const spans = frames.slice(0, 10).map((f) => decoder.decode(f)).filter(Boolean);
+  const padded = decoder.decode({ ...frames[10], discardPaddingNs: 13_500_000 });
+  const contentEnd = padded.startSample + padded.channelData[0].length;
+  assert.equal(contentEnd, spans.at(-1).startSample + spans.at(-1).channelData[0].length + 960 - 648);
+  decoder.markJoin();
+  const shifted = { ...frames[11], timeSeconds: frames[11].timeSeconds - 0.0205 };
+  const joined = decoder.decode(shifted);
+  assert.equal(joined.startSample, contentEnd);
+  assert.equal(joined.channelData[0].length, Math.round(shifted.timeSeconds * 48000) + 960 - contentEnd);
+  const next = decoder.decode({ ...frames[12], timeSeconds: shifted.timeSeconds + 0.02 });
+  assert.equal(next.startSample, joined.startSample + joined.channelData[0].length);
+  decoder.free();
+});
+
+test('without a join, or when the join lands far away, the pre-roll is discarded', async () => {
+  const { init, frames } = demuxFixture();
+  const shift = (frame) => ({ ...frame, timeSeconds: frame.timeSeconds - 0.0205 });
+  const firstStart = async (join, later) => {
+    const decoder = new FrameDecoder();
+    await decoder.configure(init);
+    frames.slice(0, 11).forEach((f) => decoder.decode(f));
+    if (join) decoder.markJoin();
+    const span = later.map((f) => decoder.decode(f)).find(Boolean);
+    decoder.free();
+    return span.startSample;
+  };
+  const shifted = frames.slice(11, 20).map(shift);
+  assert.equal(await firstStart(false, shifted), Math.round(shifted[0].timeSeconds * 48000) + 3840);
+  assert.equal(await firstStart(true, frames.slice(200, 210)), Math.round(frames[200].timeSeconds * 48000) + 3840);
 });
