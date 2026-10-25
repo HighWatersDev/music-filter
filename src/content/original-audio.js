@@ -27,8 +27,48 @@ export function createOriginalAudioRegistry({ mode, readPlayerVolume = () => nul
   };
 }
 
+const HAVE_METADATA = 1;
+
 function createControl(video, context, { mode, level, readPlayerVolume }) {
   if (mode !== 'graph') return createMuteControl(video, { level, readPlayerVolume, error: null });
+  return createDeferredGraphControl(video, context, { level, readPlayerVolume });
+}
+
+// Routing an element before it has a source left YouTube stuck at 0:00 on Firefox for Android.
+// Metadata always arrives before the element can play audio, so waiting for it leaks nothing.
+function createDeferredGraphControl(video, context, { level: initialLevel, readPlayerVolume }) {
+  let level = initialLevel;
+  let routed = null;
+  const route = () => {
+    if (routed || level === 1) return;
+    video.removeEventListener('loadedmetadata', route);
+    routed = routeToGraph(video, context, { level, readPlayerVolume });
+  };
+  const routeIfReady = () => {
+    if (video.readyState >= HAVE_METADATA) route();
+  };
+  const control = {
+    get mode() {
+      return routed?.mode ?? 'graph';
+    },
+    get error() {
+      return routed?.error ?? null;
+    },
+    setLevel(next) {
+      level = next;
+      routeIfReady();
+      routed?.setLevel(next);
+    },
+    currentLevel: () => routed?.currentLevel() ?? level,
+    userVolume: () => routed?.userVolume() ?? (video.muted ? 0 : video.volume),
+    isRouted: () => routed !== null,
+  };
+  video.addEventListener('loadedmetadata', route);
+  routeIfReady();
+  return control;
+}
+
+function routeToGraph(video, context, { level, readPlayerVolume }) {
   const gain = context.createGain();
   gain.gain.value = level;
   let source;

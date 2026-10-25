@@ -5,6 +5,11 @@ import { createOriginalAudioRegistry, resolveUserVolume } from '../src/content/o
 class FakeVideo extends EventTarget {
   muted = false;
   volume = 0.7;
+  readyState = 1;
+  loadMetadata() {
+    this.readyState = 1;
+    this.dispatchEvent(new Event('loadedmetadata'));
+  }
   changeVolume(changes) {
     Object.assign(this, changes);
     this.dispatchEvent(new Event('volumechange'));
@@ -114,6 +119,83 @@ test('every attached element stays silent until restoreAll', () => {
   assert.equal(second.currentLevel(), 1);
   assert.equal(context.gains[0].gain.value, 1);
   assert.equal(context.gains[1].gain.value, 1);
+});
+
+test('an element without a source is not routed until its metadata loads', () => {
+  const context = fakeContext();
+  const registry = createOriginalAudioRegistry({ mode: 'graph' });
+  const video = new FakeVideo();
+  video.readyState = 0;
+  const control = registry.attach(video, context, { level: 0 });
+  control.setLevel(0);
+  assert.equal(context.sourceCalls, 0);
+  assert.equal(control.isRouted(), false);
+  assert.equal(control.currentLevel(), 0);
+  assert.equal(control.error, null);
+  video.loadMetadata();
+  assert.equal(context.sourceCalls, 1);
+  assert.equal(control.isRouted(), true);
+  assert.equal(registry.attach(video, context, { level: 0 }), control);
+  assert.equal(context.sourceCalls, 1);
+});
+
+test('routing on loadedmetadata starts the graph silent while the filter is on', () => {
+  const context = fakeContext();
+  const registry = createOriginalAudioRegistry({ mode: 'graph' });
+  const video = new FakeVideo();
+  video.readyState = 0;
+  const control = registry.attach(video, context, { level: 0 });
+  video.loadMetadata();
+  const { gain } = context.gains[0];
+  assert.equal(gain.value, 0);
+  assert.ok(gain.calls.every(([kind, value]) => kind === 'cancel' || value === 0));
+  assert.equal(control.currentLevel(), 0);
+  control.setLevel(1);
+  assert.equal(gain.value, 1);
+});
+
+test('a level change routes an element that gained metadata without an event', () => {
+  const context = fakeContext();
+  const registry = createOriginalAudioRegistry({ mode: 'graph' });
+  const video = new FakeVideo();
+  video.readyState = 0;
+  const control = registry.attach(video, context, { level: 0 });
+  video.readyState = 2;
+  control.setLevel(0);
+  assert.equal(context.sourceCalls, 1);
+  assert.equal(context.gains[0].gain.value, 0);
+});
+
+test('an element restored before its metadata loads is left unrouted', () => {
+  const context = fakeContext();
+  const registry = createOriginalAudioRegistry({ mode: 'graph' });
+  const video = new FakeVideo();
+  video.readyState = 0;
+  const control = registry.attach(video, context, { level: 0 });
+  registry.restoreAll();
+  video.loadMetadata();
+  assert.equal(context.sourceCalls, 0);
+  assert.equal(control.currentLevel(), 1);
+  registry.attach(video, context, { level: 0 });
+  assert.equal(context.sourceCalls, 1);
+  assert.equal(context.gains[0].gain.value, 0);
+});
+
+test('a graph that fails when metadata loads fails closed by muting the element', () => {
+  const context = fakeContext();
+  context.createMediaElementSource = () => {
+    throw new Error('InvalidStateError');
+  };
+  const registry = createOriginalAudioRegistry({ mode: 'graph' });
+  const video = new FakeVideo();
+  video.readyState = 0;
+  const control = registry.attach(video, context, { level: 0 });
+  assert.equal(control.error, null);
+  video.loadMetadata();
+  assert.match(control.error, /InvalidStateError/);
+  assert.equal(control.mode, 'mute');
+  assert.equal(video.muted, true);
+  assert.equal(video.volume, 0);
 });
 
 test('mute mode silences with muted and volume and restores the user settings', () => {

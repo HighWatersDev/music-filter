@@ -24,6 +24,7 @@ export function decideHold({
   isPaused,
   isHeld,
   heldSeconds,
+  playRequestedSeconds = 0,
   isAudioRunning,
   processed,
   now,
@@ -34,9 +35,8 @@ export function decideHold({
   if (failure) return release('error');
   if (playbackRate !== 1) return release('muted');
   if (!hasStream) {
-    if (isHeld && heldSeconds >= config.noStreamTimeoutSeconds) {
-      return { action: 'resume', state: 'error', failure: 'no audio stream found' };
-    }
+    const waitedSeconds = Math.max(isHeld ? heldSeconds : 0, playRequestedSeconds);
+    if (waitedSeconds >= config.noStreamTimeoutSeconds) return { ...release('error'), failure: 'no audio stream found' };
     return { action: isPaused ? 'none' : 'pause', state: 'waiting' };
   }
 

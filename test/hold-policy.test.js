@@ -84,6 +84,26 @@ test('playing with no stream holds like buffering and gives up with an error', (
   });
 });
 
+test('a play request that never starts playback still ends in the no-stream error', () => {
+  const requested = { ...playing, hasStream: false, isPaused: true };
+  assert.deepEqual(decideHold({ ...requested, playRequestedSeconds: 9 }), { action: 'none', state: 'waiting' });
+  assert.deepEqual(decideHold({ ...requested, playRequestedSeconds: 10 }), {
+    action: 'none',
+    state: 'error',
+    failure: 'no audio stream found',
+  });
+  assert.deepEqual(decideHold({ ...requested, isHeld: true, heldSeconds: 2, playRequestedSeconds: 10 }), {
+    action: 'resume',
+    state: 'error',
+    failure: 'no audio stream found',
+  });
+});
+
+test('a play request does not shorten the hold once a stream is found', () => {
+  const held = { ...playing, isPaused: true, isHeld: true, heldSeconds: 5, playRequestedSeconds: 20 };
+  assert.deepEqual(decideHold(held), { action: 'none', state: 'filtering' });
+});
+
 test('canPlayProcessed needs a filtered, playing, buffered video and running audio', () => {
   const ready = { state: 'filtered', isPaused: false, isSeeking: false, isAudioRunning: true, readyState: 4 };
   assert.equal(canPlayProcessed(ready), true);

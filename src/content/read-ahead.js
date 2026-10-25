@@ -12,7 +12,7 @@ const RETAINED_BYTES = 16 * 1024 * 1024;
 const MAX_STREAMS = 4;
 const OUTPUT_SAMPLE_RATE = 48000;
 const REPLAY_INTERVAL_MS = 5000;
-const TICK_EVENTS = ['play', 'playing', 'seeked', 'ratechange', 'waiting', 'pause', 'ended', 'emptied'];
+const TICK_EVENTS = ['loadedmetadata', 'play', 'playing', 'seeked', 'ratechange', 'waiting', 'pause', 'ended', 'emptied'];
 
 const isSafari = navigator.vendor === 'Apple Computer, Inc.';
 const isLocalTest = location.hostname === 'localhost' && localStorage.getItem('mf_fake_separator') === '1';
@@ -34,6 +34,7 @@ let attachedVideo;
 let videoListeners;
 let detail = '';
 let heldSince = null;
+let playRequestedAt = null;
 let tappedPlayerVolume = null;
 
 const panel = createPanel({ onToggle: (on) => setEnabled(on).catch((error) => failClosed(error.message)) });
@@ -272,8 +273,10 @@ function attach(video) {
   activeStreamId = null;
   streamFailure = null;
   heldSince = null;
+  playRequestedAt = null;
   videoListeners = new AbortController();
   const { signal } = videoListeners;
+  video.addEventListener('play', () => (playRequestedAt ??= performance.now()), { signal });
   video.addEventListener(
     'seeking',
     () => {
@@ -291,6 +294,7 @@ async function setEnabled(on) {
   isEnabled = on;
   if (!on) {
     releaseHold();
+    playRequestedAt = null;
     scheduler?.stopAll();
     activeStreamId = null;
     fallbackMutes.restoreAll();
@@ -326,6 +330,7 @@ function tick() {
   const stream = selectStream(video);
   if (!stream && activeStreamId !== null) deactivate();
   if (stream && stream.streamId !== activeStreamId) activate(stream);
+  if (activeStreamId !== null) playRequestedAt = null;
   if (activeStreamId !== null && !currentFailure()) {
     send({ type: 'playhead', streamId: activeStreamId, seconds: video.currentTime, isPlaying: !video.paused });
   }
@@ -339,6 +344,7 @@ function tick() {
     isPaused: video.paused,
     isHeld: heldSince !== null,
     heldSeconds: heldSince === null ? 0 : (performance.now() - heldSince) / 1000,
+    playRequestedSeconds: playRequestedAt === null ? 0 : (performance.now() - playRequestedAt) / 1000,
     isAudioRunning,
     processed: scheduler.ranges,
     now: video.currentTime,
