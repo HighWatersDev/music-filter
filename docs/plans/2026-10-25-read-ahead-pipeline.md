@@ -686,6 +686,16 @@ test('a time jump restarts with pre-roll discarded', async () => {
   assert.equal(jumped[0].startSample, expectedStart);
   decoder.free();
 });
+
+test('free while configuring is safe', async () => {
+  const { init } = demuxFixture();
+  const decoder = new FrameDecoder();
+  const configuring = decoder.configure(init);
+  decoder.free();
+  await configuring;
+  assert.equal(decoder.isReady, false);
+  assert.equal(decoder.decoder, null);
+});
 ```
 
 **Step 2: Run it and see it fail**
@@ -751,7 +761,7 @@ export class FrameDecoder {
     const head = init.codecPrivate
       ? parseOpusHead(init.codecPrivate)
       : { channels: init.channels, preSkip: Math.round((init.codecDelayNs / 1e9) * this.sampleRate) };
-    this.decoder = new OpusDecoder({
+    const decoder = new OpusDecoder({
       sampleRate: this.sampleRate,
       channels: head.channels,
       streamCount: head.streamCount,
@@ -760,7 +770,12 @@ export class FrameDecoder {
       forceStereo: true,
       preSkip: 0,
     });
-    await this.decoder.ready;
+    this.decoder = decoder;
+    await decoder.ready;
+    if (this.decoder !== decoder) {
+      decoder.free();
+      return;
+    }
     this.preRollSamples = Math.round(((init.seekPreRollNs || DEFAULT_PRE_ROLL_SECONDS * 1e9) / 1e9) * this.sampleRate);
     this.toleranceSamples = Math.round(CONTINUITY_TOLERANCE_SECONDS * this.sampleRate);
     this.expectedNext = null;
@@ -785,7 +800,7 @@ export class FrameDecoder {
   }
 
   free() {
-    this.decoder?.free();
+    if (this.isReady) this.decoder.free();
     this.decoder = null;
     this.isReady = false;
   }
@@ -793,6 +808,7 @@ export class FrameDecoder {
 ```
 
 Why it works this way:
+- `OpusDecoder.free()` throws until its WASM has loaded. `free()` during `configure()` only drops the reference, and `configure()` frees the orphaned decoder once it is ready. The stream engine hits this when a reset arrives while the decoder is still loading.
 - WebM timestamps are whole milliseconds, so consecutive 20 ms frames can land up to 1 sample off. Frames within 5 ms of where the previous frame ended are placed back to back, keeping the PCM gapless.
 - A bigger jump (seek, dropped chunks) keeps the decoder state and throws away the next pre-roll (80 ms), which is what libopus needs to converge. No `reset()` call is needed.
 - The first output after configure drops the OpusHead pre-skip (312 samples). This leaves a 6.5 ms offset between PCM and video, below anything audible or visible.
@@ -800,7 +816,7 @@ Why it works this way:
 **Step 5: Run tests**
 
 Run: `npm test`
-Expected: PASS, 38 tests
+Expected: PASS, 39 tests
 
 **Step 6: Commit**
 
@@ -990,7 +1006,7 @@ export class PcmTimeline {
 **Step 5: Run tests**
 
 Run: `npm test`
-Expected: PASS, 44 tests
+Expected: PASS, 45 tests
 
 **Step 6: Commit**
 
@@ -1042,6 +1058,11 @@ test('next window overlaps the processed end and is full length', () => {
   assert.deepEqual(plan, { start: 3 * S, end: 13 * S });
 });
 
+test('a small gap before processed audio still counts as processed', () => {
+  const plan = planNextWindow({ ...base, playhead: 0, decoded: [[312, 60 * S]], processed: [[312, 312 + 4 * S]] });
+  assert.deepEqual(plan, { start: 312 + 3 * S, end: 312 + 13 * S });
+});
+
 test('stops when enough is processed ahead', () => {
   const plan = planNextWindow({ ...base, playhead: 0, decoded: [[0, 60 * S]], processed: [[0, 31 * S]] });
   assert.equal(plan, null);
@@ -1055,8 +1076,10 @@ test('waits for more decoded audio unless the window is urgent', () => {
 });
 
 test('never plans a window shorter than the minimum', () => {
-  const plan = planNextWindow({ ...base, playhead: 9 * S, decoded: [[0, 11.5 * S]], processed: [[0, 10 * S]] });
-  assert.equal(plan, null);
+  const tooShort = planNextWindow({ ...base, playhead: 9 * S, decoded: [[0, 10.5 * S]], processed: [[0, 10 * S]] });
+  assert.equal(tooShort, null);
+  const exactlyMinimum = planNextWindow({ ...base, playhead: 9 * S, decoded: [[0, 11 * S]], processed: [[0, 10 * S]] });
+  assert.deepEqual(exactlyMinimum, { start: 9 * S, end: 11 * S });
 });
 
 test('after a seek, plans from the new playhead', () => {
@@ -1091,7 +1114,9 @@ export function planNextWindow({
   urgency,
   maxStartGap,
 }) {
-  const processedEnd = contiguousEnd(processed, playhead);
+  const processedStart = nextRangeStart(processed, playhead);
+  const processedEnd =
+    processedStart !== null && processedStart - playhead <= maxStartGap ? contiguousEnd(processed, processedStart) : playhead;
   if (processedEnd - playhead >= lookahead) return null;
 
   const continuing = processedEnd > playhead;
@@ -1110,10 +1135,12 @@ export function planNextWindow({
 }
 ```
 
+The processed run is looked up with the same `maxStartGap` tolerance as the decoded run. Decoded audio starts at the 312-sample pre-skip, so the first processed window starts there too. With a plain `contiguousEnd(processed, 0)` the planner would see nothing processed and plan the first window again, forever.
+
 **Step 4: Run tests**
 
 Run: `npm test`
-Expected: PASS, 52 tests
+Expected: PASS, 54 tests
 
 **Step 5: Commit**
 
@@ -1158,6 +1185,7 @@ function startEngine(options = {}) {
 }
 
 async function settle(engine) {
+  await engine.ready;
   for (let i = 0; i < 200 && (engine.inFlight || !engine.isIdle()); i++) {
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
@@ -1165,7 +1193,6 @@ async function settle(engine) {
 
 test('emits a short first window then overlapping windows', async () => {
   const { engine, windows } = startEngine();
-  await engine.ready;
   engine.pushChunk(bytes);
   engine.setPlayhead(0, true);
   await settle(engine);
@@ -1177,18 +1204,23 @@ test('emits a short first window then overlapping windows', async () => {
 });
 
 test('separated audio is what the separator returned', async () => {
+  const passThrough = startEngine({ separate: async (left, right) => [left.slice(), right.slice()] });
+  passThrough.engine.pushChunk(bytes);
+  passThrough.engine.setPlayhead(0, true);
+  await settle(passThrough.engine);
   const { engine, windows } = startEngine();
-  await engine.ready;
   engine.pushChunk(bytes);
   engine.setPlayhead(0, true);
   await settle(engine);
-  const peak = Math.max(...windows[0].left.map(Math.abs));
-  assert.ok(peak > 0.1 && peak < 0.6);
+  const input = passThrough.windows[0].left;
+  const output = windows[0].left;
+  assert.equal(output.length, input.length);
+  assert.ok(input.some((sample) => Math.abs(sample) > 0.05));
+  assert.ok(output.every((sample, i) => sample === input[i] * 0.5));
 });
 
 test('a seek plans from the new playhead', async () => {
   const { engine, windows } = startEngine();
-  await engine.ready;
   engine.pushChunk(bytes);
   engine.setPlayhead(8, true);
   await settle(engine);
@@ -1199,10 +1231,10 @@ test('reset discards a window still in flight', async () => {
   let release;
   const slow = (left, right) => new Promise((resolve) => (release = () => resolve([left, right])));
   const { engine, windows } = startEngine({ separate: slow });
-  await engine.ready;
   engine.pushChunk(bytes);
   engine.setPlayhead(0, true);
-  await new Promise((resolve) => setTimeout(resolve, 5));
+  await engine.ready;
+  assert.ok(engine.inFlight);
   engine.reset();
   release();
   await settle(engine);
@@ -1214,7 +1246,6 @@ test('a separation error halts the engine and reports it', async () => {
     throw new Error('boom');
   };
   const { engine, windows, statuses } = startEngine({ separate: failing });
-  await engine.ready;
   engine.pushChunk(bytes);
   engine.setPlayhead(0, true);
   await settle(engine);
@@ -1227,6 +1258,14 @@ test('a non-Opus track is reported as unsupported', async () => {
   await engine.ready;
   engine.handleInit({ codecId: 'A_AAC' });
   assert.ok(statuses.some((s) => s.stage === 'unsupported'));
+});
+
+test('a bad OpusHead halts the engine and reports it', async () => {
+  const { engine, statuses } = startEngine();
+  engine.handleInit({ codecId: 'A_OPUS', codecPrivate: new Uint8Array(19), seekPreRollNs: 0 });
+  await engine.ready;
+  assert.ok(statuses.some((s) => s.stage === 'error' && /OpusHead/.test(s.message)));
+  assert.equal(engine.isIdle(), true);
 });
 ```
 
@@ -1318,11 +1357,18 @@ export class StreamEngine {
     const decoder = new FrameDecoder({ sampleRate: this.config.sampleRate });
     this.decoder?.free();
     this.decoder = decoder;
-    this.ready = decoder.configure(init).then(() => {
-      if (this.decoder !== decoder) return;
-      for (const frame of this.queuedFrames.splice(0)) this.decodeFrame(frame);
-      this.pump();
-    });
+    this.ready = decoder
+      .configure(init)
+      .then(() => {
+        if (this.decoder !== decoder) return;
+        for (const frame of this.queuedFrames.splice(0)) this.decodeFrame(frame);
+        this.pump();
+      })
+      .catch((error) => {
+        if (this.decoder !== decoder) return;
+        this.halted = error.message;
+        this.onStatus({ stage: 'error', message: error.message });
+      });
   }
 
   handleFrame(frame) {
@@ -1394,10 +1440,15 @@ export class StreamEngine {
 }
 ```
 
+Behaviour to know:
+- `ready` is the decoder's configure promise, and it only exists once `pushChunk` has parsed an init segment. Before that it is an already-resolved promise. The tests' `settle` awaits it after pushing bytes, and the reset test awaits it so a window is really in flight before `reset()`.
+- Frames that arrive while the decoder loads are queued and decoded when it is ready, then `pump()` runs with whatever playhead was set meanwhile.
+- A configure failure (bad OpusHead) halts the engine with an `error` status instead of becoming an unhandled rejection.
+
 **Step 4: Run tests**
 
 Run: `npm test`
-Expected: PASS, 58 tests
+Expected: PASS, 61 tests
 
 **Step 5: Commit**
 
@@ -1437,24 +1488,33 @@ Add below `runSeparation`:
 ```js
 const STREAM_MESSAGES = new Set(['stream-reset', 'stream-chunk', 'stream-abort', 'playhead']);
 let stream = null;
+let separationQueue = Promise.resolve();
+
+function queueSeparation(task) {
+  const result = separationQueue.then(task);
+  separationQueue = result.catch(() => {});
+  return result;
+}
 
 function createWindowSeparator(model, device, streamId) {
   if (model === 'fake') return async (left, right) => [left.map((s) => s * 0.5), right.map((s) => s * 0.5)];
-  return async (left, right, sampleRate) => {
-    const ready = await prepare(model, device, (status) => post({ type: 'stream-status', streamId, ...status }));
-    const { residual } = await separate([left, right], {
-      model,
-      sampleRate,
-      targets: ['music'],
-      session: async () => ready.session,
+  return (left, right, sampleRate) =>
+    queueSeparation(async () => {
+      const ready = await prepare(model, device, (status) => post({ type: 'stream-status', streamId, ...status }));
+      const { residual } = await separate([left, right], {
+        model,
+        sampleRate,
+        targets: ['music'],
+        session: async () => ready.session,
+      });
+      return residual;
     });
-    return residual;
-  };
 }
 
 function handleStream(data) {
   if (data.type === 'stream-reset') {
     const { streamId, model, device } = data;
+    stream?.engine.reset();
     stream = {
       id: streamId,
       engine: new StreamEngine({
@@ -1476,6 +1536,8 @@ function handleStream(data) {
 }
 ```
 
+`stream-reset` resets the old engine before replacing it. That frees its Opus decoder and bumps its generation, so a window it still has in flight is dropped instead of being posted and then planning more windows for a stream nobody plays. An MRX call cannot be cancelled, so `queueSeparation` runs one at a time. The new stream's first window waits for the old call instead of running two separations on the same ONNX session at once.
+
 In `self.onmessage`, before `handle(data)…`, add:
 
 ```js
@@ -1495,7 +1557,7 @@ Run: `npm run build:separator`
 Expected: `extension/dist/separator-worker.js` builds with opus-decoder inside, and there are no unresolved imports.
 
 Run: `npm test`
-Expected: PASS, 58 tests
+Expected: PASS, 61 tests
 
 **Step 4: Commit**
 
@@ -1554,7 +1616,7 @@ This script runs in the page's MAIN world at `document_start`, before YouTube cr
     queue.push(event);
   }
 
-  function wrapMediaSource(MediaSourceClass, isManaged) {
+  function wrapMediaSource(MediaSourceClass) {
     const proto = MediaSourceClass?.prototype;
     if (!proto || !Object.prototype.hasOwnProperty.call(proto, 'addSourceBuffer')) return;
     const addSourceBuffer = proto.addSourceBuffer;
@@ -1562,6 +1624,7 @@ This script runs in the page's MAIN world at `document_start`, before YouTube cr
       const sourceBuffer = addSourceBuffer.call(this, mime);
       if (String(mime).startsWith('audio/')) {
         const streamId = idOf(sourceBuffer);
+        const isManaged = typeof window.ManagedMediaSource === 'function' && this instanceof window.ManagedMediaSource;
         audioStreamIds.set(sourceBuffer, streamId);
         emit({ kind: 'source-buffer', streamId, mediaSourceId: idOf(this), mime: String(mime), isManaged });
       }
@@ -1593,8 +1656,8 @@ This script runs in the page's MAIN world at `document_start`, before YouTube cr
     return url;
   };
 
-  wrapMediaSource(window.MediaSource, false);
-  wrapMediaSource(window.ManagedMediaSource, true);
+  wrapMediaSource(window.MediaSource);
+  wrapMediaSource(window.ManagedMediaSource);
   wrapSourceBuffer(window.SourceBuffer);
   wrapSourceBuffer(window.ManagedSourceBuffer);
 
@@ -1608,7 +1671,7 @@ This script runs in the page's MAIN world at `document_start`, before YouTube cr
 ```
 
 Notes:
-- The `hasOwnProperty` checks stop double-wrapping where `ManagedSourceBuffer` inherits `appendBuffer` from `SourceBuffer`.
+- The `hasOwnProperty` checks stop double-wrapping where `ManagedSourceBuffer` inherits `appendBuffer` from `SourceBuffer`. `ManagedMediaSource` inherits `addSourceBuffer` the same way, so its calls go through the `MediaSource` wrapper and `isManaged` is read from the instance.
 - A hostile page could send the connect message first and take the port. That only stops filtering on that page, and the page is the one serving the audio, so it is accepted.
 
 **Step 2: Syntax check**
@@ -1703,7 +1766,7 @@ export function measureDrift({ anchorCtx, anchorMedia, ctxNow, mediaNow }) {
 **Step 4: Run tests**
 
 Run: `npm test`
-Expected: PASS, 63 tests
+Expected: PASS, 66 tests
 
 **Step 5: Commit**
 
@@ -2013,6 +2076,7 @@ import { connectSeparator } from './separator-client.js';
 const TAP_CONNECT = 'music-filter:tap-connect';
 const TICK_MS = 250;
 const RETAINED_BYTES = 16 * 1024 * 1024;
+const MAX_STREAMS = 4;
 const OUTPUT_SAMPLE_RATE = 48000;
 
 const isSafari = navigator.vendor === 'Apple Computer, Inc.';
@@ -2048,6 +2112,10 @@ function handleTapEvent(event) {
   }
   if (event.kind === 'source-buffer') {
     streams.set(event.streamId, { ...event, init: null, chunks: [], retainedBytes: 0 });
+    for (const id of streams.keys()) {
+      if (streams.size <= MAX_STREAMS) break;
+      if (id !== activeStreamId) streams.delete(id);
+    }
     return;
   }
   const stream = streams.get(event.streamId);
@@ -2090,6 +2158,10 @@ function send(message, transfer = []) {
 }
 
 function handleWorkerMessage(message) {
+  if (message.type === 'error') {
+    fail(`separator: ${message.message}`);
+    return;
+  }
   if (message.streamId !== activeStreamId) return;
   if (message.type === 'window') {
     scheduler?.addWindow(message);
@@ -2173,7 +2245,8 @@ function tick() {
   if (activeStreamId !== null) send({ type: 'playhead', streamId: activeStreamId, seconds: video.currentTime, isPlaying });
 
   const isAdShowing = Boolean(document.querySelector('#movie_player.ad-showing'));
-  const allowProcessed = !failure && isPlaying && !isAdShowing && video.playbackRate === 1;
+  const allowProcessed =
+    !failure && isPlaying && !isAdShowing && video.playbackRate === 1 && context.state === 'running';
   const isCovered = scheduler.tick({ allowProcessed });
   original.setLevel(isCovered ? 0 : 1);
   scheduler.setVolume(original.userVolume());
@@ -2188,6 +2261,11 @@ function tick() {
   });
 }
 ```
+
+Behaviour to know:
+- `type: 'error'` messages come from `frame.js` (the Worker failed to start or crashed) and carry no `streamId`. They are handled before the stream filter, or a dead Worker would leave the panel on `original` with no reason shown.
+- Processed audio needs `context.state === 'running'`. Safari moves the context to `interrupted` on calls and some backgrounding, and a stalled context with the original muted would be silent.
+- Each YouTube video gets a new MediaSource. Old streams are dropped past `MAX_STREAMS`, so their retained bytes (up to 16 MB each) do not pile up over a long session.
 
 **Step 6: Bundle it.** In `scripts/build-separator.mjs`, after the existing `await build(...)`, add:
 
@@ -2226,7 +2304,7 @@ Leave `web_accessible_resources` as it is. It already lists `separator.html`, `d
 **Step 8: Build and check**
 
 Run: `npm run build && node --check extension/dist/read-ahead.js && npm test`
-Expected: build writes `extension/dist/read-ahead.js`, syntax check passes, 63 tests pass.
+Expected: build writes `extension/dist/read-ahead.js`, syntax check passes, 66 tests pass.
 
 **Step 9: Commit**
 
@@ -2287,7 +2365,7 @@ git commit -m "feat(extension): read-ahead content script with scheduler and ori
 npm install --save-dev --save-exact playwright@1.49.1
 ```
 
-If `~/Library/Caches/ms-playwright/chromium-1248` does not exist, run `npx playwright install chromium`.
+Then run `npx playwright install chromium`. It is a no-op when this Playwright version's Chromium is already cached. The `chromium-1248` folder already in `~/Library/Caches/ms-playwright` belongs to Playwright 1.64, not 1.49.1, so it does not count.
 
 **Step 3: `test/e2e/read-ahead.e2e.mjs`**
 
@@ -2343,6 +2421,7 @@ try {
   console.log('filtered', filtered);
 
   await page.evaluate(() => (document.querySelector('video').currentTime = 40));
+  await page.waitForTimeout(600);
   const afterSeek = await waitForState(page, 'filtered', useRealModel ? 60_000 : 15_000);
   console.log('filtered after seek', afterSeek);
 
@@ -2359,6 +2438,8 @@ try {
   rmSync(profile, { recursive: true, force: true });
 }
 ```
+
+The 600 ms wait after the seek lets two ticks pass. Without it, `waitForState` can read the `filtered` panel left over from before the seek and pass without checking anything at 40 s.
 
 Add to `package.json` scripts: `"test:e2e": "npm run build && node test/e2e/read-ahead.e2e.mjs"`.
 
@@ -2403,11 +2484,11 @@ const engine = new StreamEngine({
     (await separate([left, right], { model: 'mrx', sampleRate, targets: ['music'] })).residual,
   onWindow: (w) => windows.push(w),
   onStatus: (s) => s.stage === 'window' && console.log(JSON.stringify(s)),
-  config: { lookaheadSeconds: 3600 },
+  config: { lookaheadSeconds: 3600, urgencySeconds: 3600 },
 });
-await engine.ready;
 engine.pushChunk(bytes);
 engine.setPlayhead(0, true);
+await engine.ready;
 while (engine.inFlight || !engine.isIdle()) await new Promise((r) => setTimeout(r, 100));
 
 const rate = 48000;
@@ -2448,6 +2529,8 @@ for (let i = 0; i < total; i++) {
 writeFileSync(output, data);
 console.log(`${windows.length} windows → ${output}`);
 ```
+
+`await engine.ready` has to come after `pushChunk`. Until the init segment is parsed, `ready` is an already-resolved promise, and the loop would exit with no windows. The playhead stays at 0, so `urgencySeconds: 3600` lets the planner take the short last window instead of leaving the final seconds out. `@audio/neural-separate` resolves from `tools/listen/node_modules`, which already has it with `onnxruntime-node`. The engine's `opus-decoder` resolves from the repo root.
 
 **Step 2: Run it**
 
