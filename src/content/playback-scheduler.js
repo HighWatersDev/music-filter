@@ -1,22 +1,32 @@
 import { readyAheadSeconds } from '../pipeline/hold-policy.js';
-import { crossfadeSpan, measureDrift, scheduleSpan } from '../pipeline/playback-math.js';
+import {
+  crossfadeSpan,
+  measureDrift,
+  mediaToContext,
+  outputLatencyOf,
+  overlapPlan,
+  scheduleSpan,
+  trackPlayhead,
+} from '../pipeline/playback-math.js';
 import { addRange } from '../pipeline/ranges.js';
 
 const HORIZON_SECONDS = 2;
 const KEEP_BEHIND_SECONDS = 30;
 const KEEP_AHEAD_SECONDS = 90;
 const DRIFT_LIMIT_SECONDS = 0.08;
+const STOP_FADE_SECONDS = 0.015;
 
 export class PlaybackScheduler {
   constructor(context, video) {
     this.context = context;
     this.video = video;
-    this.bus = new GainNode(context, { gain: 1 });
+    this.bus = new GainNode(context, { gain: 0 });
     this.bus.connect(context.destination);
     this.windows = [];
     this.ranges = [];
     this.playing = new Map();
     this.anchor = null;
+    this.lastMoved = null;
   }
 
   addWindow({ startSeconds, sampleRate, left, right }) {
@@ -34,32 +44,48 @@ export class PlaybackScheduler {
     this.evict(mediaNow);
     if (!allowProcessed) {
       this.stopAll();
+      this.lastMoved = null;
+      return;
+    }
+    const playhead = trackPlayhead(this.lastMoved, mediaNow, ctxNow);
+    this.lastMoved = playhead.lastMoved;
+    if (playhead.isFrozen) {
+      this.stopAll();
       return;
     }
     if (this.anchor && Math.abs(measureDrift({ ...this.anchor, ctxNow, mediaNow })) > DRIFT_LIMIT_SECONDS) this.stopAll();
+    const latency = outputLatencyOf(this.context);
     for (const window of this.windows) {
       if (this.playing.has(window) || window.end <= mediaNow || window.start > mediaNow + HORIZON_SECONDS) continue;
-      this.start(window, mediaNow, ctxNow);
+      this.start(window, mediaNow, ctxNow, latency);
     }
   }
 
-  start(window, mediaNow, ctxNow) {
-    const span = scheduleSpan({ windowStart: window.start, windowEnd: window.end, mediaNow, ctxNow });
+  start(window, mediaNow, ctxNow, latency) {
+    const span = scheduleSpan({ windowStart: window.start, windowEnd: window.end, mediaNow, ctxNow, latency });
     if (!span) return;
-    const toContext = (media) => ctxNow + (media - mediaNow);
+    const playing = [...this.playing.entries()];
+    const plan = overlapPlan({
+      startMedia: span.startMedia,
+      windowEnd: window.end,
+      playing: playing.map(([other]) => other),
+    });
+    if (plan.skip) return;
+
+    const toContext = (media) => mediaToContext({ media, mediaNow, ctxNow, latency });
     const source = new AudioBufferSourceNode(this.context, { buffer: window.buffer });
     const gain = new GainNode(this.context, { gain: 1 });
     source.connect(gain).connect(this.bus);
 
-    const previous = [...this.playing.entries()].find(([other]) => other.start < window.start && other.end > span.startMedia);
-    if (previous) {
-      const fade = crossfadeSpan({ previousEnd: previous[0].end, nextStart: window.start, mediaNow });
+    if (plan.previous !== -1) {
+      const [previousWindow, previousNodes] = playing[plan.previous];
+      const fade = crossfadeSpan({ previousEnd: previousWindow.end, nextStart: window.start, mediaNow, latency });
       if (fade) {
         gain.gain.setValueAtTime(0, ctxNow);
         gain.gain.setValueAtTime(0, toContext(fade.from));
         gain.gain.linearRampToValueAtTime(1, toContext(fade.to));
-        previous[1].gain.gain.setValueAtTime(1, toContext(fade.from));
-        previous[1].gain.gain.linearRampToValueAtTime(0, toContext(fade.to));
+        previousNodes.gain.gain.setValueAtTime(1, toContext(fade.from));
+        previousNodes.gain.gain.linearRampToValueAtTime(0, toContext(fade.to));
       }
     }
 
@@ -72,9 +98,14 @@ export class PlaybackScheduler {
   }
 
   stopAll() {
-    for (const { source } of this.playing.values()) {
+    const now = this.context.currentTime;
+    const stopAt = now + STOP_FADE_SECONDS;
+    for (const { source, gain } of this.playing.values()) {
       try {
-        source.stop();
+        gain.gain.cancelScheduledValues(now);
+        gain.gain.setValueAtTime(gain.gain.value, now);
+        gain.gain.linearRampToValueAtTime(0, stopAt);
+        source.stop(stopAt);
       } catch {}
     }
     this.playing.clear();
@@ -85,6 +116,12 @@ export class PlaybackScheduler {
     this.stopAll();
     this.windows = [];
     this.ranges = [];
+    this.lastMoved = null;
+  }
+
+  dispose() {
+    this.reset();
+    this.bus.disconnect();
   }
 
   setVolume(level) {
