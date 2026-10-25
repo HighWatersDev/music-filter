@@ -4,8 +4,15 @@
   "version": "0.0.1",
   "content_scripts": [
     {
-      "matches": ["https://www.youtube.com/*", "http://localhost/*"],
-      "js": ["content.js", "clip-test.js"],
+      "matches": [
+        "https://www.youtube.com/*",
+        "https://m.youtube.com/*",
+        "http://localhost/*"
+      ],
+      "js": [
+        "content.js",
+        "clip-test.js"
+      ],
       "run_at": "document_idle"
     }
   ],
@@ -20,7 +27,11 @@
         "dist/separator-worker.js",
         "dist/ort/*"
       ],
-      "matches": ["https://www.youtube.com/*", "http://localhost/*"]
+      "matches": [
+        "https://www.youtube.com/*",
+        "https://m.youtube.com/*",
+        "http://localhost/*"
+      ]
     }
   ],
   "content_security_policy": {

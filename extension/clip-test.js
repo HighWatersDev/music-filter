@@ -133,6 +133,56 @@
     return document.querySelector('#movie_player video.html5-main-video') ?? document.querySelector('video');
   }
 
+  const WASM_SIMD_PROBE = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 1, 5, 1, 96, 0, 1, 123, 3, 2, 1, 0, 10, 10, 1, 8, 0, 65, 0, 253, 15, 253, 98, 11]);
+  const TAP_SECONDS = 3;
+
+  function describeSource(video) {
+    const src = video.currentSrc || video.src || '';
+    if (video.srcObject) return 'srcObject';
+    if (!src) return 'none';
+    if (src.startsWith('blob:')) return 'blob (MSE/ManagedMediaSource)';
+    return `${src.split(':')[0]}${/\.m3u8|manifest|hls/i.test(src) ? ' (native HLS)' : ''}`;
+  }
+
+  async function measureTap(video) {
+    await ensureGraph(video);
+    await graph.context.resume();
+    if (video.paused) await video.play();
+    const analyser = new AnalyserNode(graph.context, { fftSize: 2048 });
+    graph.source.connect(analyser);
+    const samples = new Float32Array(analyser.fftSize);
+    let peak = 0;
+    const endAt = performance.now() + TAP_SECONDS * 1000;
+    while (performance.now() < endAt) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      analyser.getFloatTimeDomainData(samples);
+      for (const sample of samples) peak = Math.max(peak, Math.abs(sample));
+    }
+    graph.source.disconnect(analyser);
+    return peak;
+  }
+
+  async function diagnose() {
+    const lines = [
+      `UA: ${navigator.userAgent}`,
+      `MediaSource=${'MediaSource' in window} ManagedMediaSource=${'ManagedMediaSource' in window}`,
+      `AudioWorklet=${typeof AudioWorkletNode === 'function'} WebGPU=${'gpu' in navigator} wasmSIMD=${WebAssembly.validate(WASM_SIMD_PROBE)} isolated=${self.crossOriginIsolated}`,
+    ];
+    const video = pickVideo();
+    if (!video) lines.push('video: none found');
+    ui.line('diag', lines.join('\n'));
+    if (!video) return;
+
+    lines.push(`video: src=${describeSource(video)} paused=${video.paused} muted=${video.muted} volume=${video.volume}`);
+    ui.line('diag', [...lines, `audio tap: measuring ${TAP_SECONDS} s…`].join('\n'));
+    const peak = await measureTap(video);
+    lines.push(
+      `audio tap: ${peak > 1e-4 ? 'SIGNAL' : 'SILENCE'} peak=${peak.toFixed(4)} context=${graph.context.sampleRate} Hz ${graph.context.state}`,
+    );
+    ui.line('diag', lines.join('\n'));
+    log('diagnose', { lines });
+  }
+
   function rampTo(param, value) {
     const now = graph.context.currentTime;
     param.cancelScheduledValues(now);
@@ -212,7 +262,7 @@
     source.connect(originalGain).connect(context.destination);
     source.connect(recorder).connect(context.destination);
     processedGain.connect(context.destination);
-    graph = { video, context, originalGain, processedGain, processedGainTarget: 0, recorder };
+    graph = { video, context, source, originalGain, processedGain, processedGainTarget: 0, recorder };
     video.addEventListener('play', () => context.resume());
     ui.line('dfn', 'DeepFilterNet panel needs a tab reload after a clip test');
     log('graph', { sampleRate: context.sampleRate });
@@ -600,6 +650,7 @@
   ui.button('removed', MODES.removed, () => selectMode('removed'));
   ui.button('replay', 'Replay', () => run(play));
   ui.button('cancel', 'Cancel', () => cancelProcessing?.());
+  ui.button('diagnose', 'Diagnose', () => run(diagnose));
   ui.line('main', `Clip test: play a video, then click Test to record the next ${CLIP_SECONDS} s.`);
   render();
 })();
