@@ -1,6 +1,8 @@
 import { readyAheadSeconds } from '../pipeline/hold-policy.js';
 import {
+  GainEnvelope,
   crossfadeSpan,
+  crossfadeStart,
   measureDrift,
   mediaToContext,
   outputLatencyOf,
@@ -15,6 +17,7 @@ const KEEP_BEHIND_SECONDS = 30;
 const KEEP_AHEAD_SECONDS = 90;
 const DRIFT_LIMIT_SECONDS = 0.08;
 const STOP_FADE_SECONDS = 0.015;
+const CROSSFADE_SECONDS = 1;
 
 export class PlaybackScheduler {
   constructor(context, video) {
@@ -62,7 +65,8 @@ export class PlaybackScheduler {
   }
 
   start(window, mediaNow, ctxNow, latency) {
-    const span = scheduleSpan({ windowStart: window.start, windowEnd: window.end, mediaNow, ctxNow, latency });
+    const timing = { windowStart: window.start, windowEnd: window.end, mediaNow, ctxNow, latency };
+    let span = scheduleSpan(timing);
     if (!span) return;
     const playing = [...this.playing.entries()];
     const plan = overlapPlan({
@@ -75,17 +79,21 @@ export class PlaybackScheduler {
     const toContext = (media) => mediaToContext({ media, mediaNow, ctxNow, latency });
     const source = new AudioBufferSourceNode(this.context, { buffer: window.buffer });
     const gain = new GainNode(this.context, { gain: 1 });
+    const envelope = new GainEnvelope(gain.gain);
     source.connect(gain).connect(this.bus);
+    let settled = span.startMedia;
 
     if (plan.previous !== -1) {
-      const [previousWindow, previousNodes] = playing[plan.previous];
-      const fade = crossfadeSpan({ previousEnd: previousWindow.end, nextStart: window.start, mediaNow, latency });
+      const [previousWindow, previous] = playing[plan.previous];
+      const notBefore = crossfadeStart({ previousEnd: previousWindow.end, previousSettled: previous.settled, overlap: CROSSFADE_SECONDS });
+      span = scheduleSpan({ ...timing, notBefore });
+      const fade = crossfadeSpan({ previousEnd: previousWindow.end, nextStart: span.startMedia, mediaNow, latency });
       if (fade) {
-        gain.gain.setValueAtTime(0, ctxNow);
-        gain.gain.setValueAtTime(0, toContext(fade.from));
-        gain.gain.linearRampToValueAtTime(1, toContext(fade.to));
-        previousNodes.gain.gain.setValueAtTime(1, toContext(fade.from));
-        previousNodes.gain.gain.linearRampToValueAtTime(0, toContext(fade.to));
+        envelope.set(0, toContext(fade.from));
+        envelope.ramp(1, toContext(fade.to));
+        previous.envelope.holdAt(toContext(fade.from));
+        previous.envelope.ramp(0, toContext(fade.to));
+        settled = fade.to;
       }
     }
 
@@ -93,7 +101,7 @@ export class PlaybackScheduler {
     source.onended = () => {
       if (this.playing.get(window)?.source === source) this.playing.delete(window);
     };
-    this.playing.set(window, { source, gain });
+    this.playing.set(window, { source, gain, envelope, settled });
     this.anchor ??= { anchorCtx: ctxNow, anchorMedia: mediaNow };
   }
 

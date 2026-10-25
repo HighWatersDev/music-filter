@@ -1,7 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  GainEnvelope,
   crossfadeSpan,
+  crossfadeStart,
   measureDrift,
   mediaToContext,
   outputLatencyOf,
@@ -102,4 +104,34 @@ test('trackPlayhead flags a playhead that has not moved for longer than the limi
   state = trackPlayhead(state.lastMoved, 10.6, 100.7);
   assert.equal(state.isFrozen, false);
   assert.deepEqual(state.lastMoved, { media: 10.6, ctx: 100.7 });
+});
+
+test('scheduleSpan starts no earlier than notBefore and keeps the offset in step', () => {
+  const span = scheduleSpan({ windowStart: 6, windowEnd: 16, mediaNow: 4, ctxNow: 100, notBefore: 12 });
+  assert.deepEqual(span, { when: 108, offset: 6, duration: 4, startMedia: 12 });
+});
+
+test('crossfadeStart limits the overlap and waits for the previous fade-in to finish', () => {
+  assert.equal(crossfadeStart({ previousEnd: 13, previousSettled: 3, overlap: 1 }), 12);
+  assert.equal(crossfadeStart({ previousEnd: 10.8, previousSettled: 10, overlap: 1 }), 10);
+});
+
+test('GainEnvelope.holdAt keeps the value reached mid-ramp and drops later events', () => {
+  const calls = [];
+  const param = {
+    value: 1,
+    setValueAtTime: (v, t) => calls.push(['set', v, t]),
+    linearRampToValueAtTime: (v, t) => calls.push(['ramp', v, t]),
+    cancelScheduledValues: (t) => calls.push(['cancel', t]),
+  };
+  const envelope = new GainEnvelope(param);
+  envelope.set(0, 2);
+  envelope.ramp(1, 4);
+  envelope.ramp(0.5, 6);
+  envelope.holdAt(3);
+  assert.equal(envelope.valueAt(2.5), 0.25);
+  assert.equal(envelope.valueAt(3), 0.5);
+  assert.equal(envelope.valueAt(5), 0.5);
+  assert.deepEqual(calls.slice(-2), [['cancel', 3], ['ramp', 0.5, 3]]);
+  assert.equal(new GainEnvelope(param).valueAt(7), 1);
 });
