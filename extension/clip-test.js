@@ -162,12 +162,66 @@
     return peak;
   }
 
+  function requestTapReport() {
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        window.removeEventListener('message', onMessage);
+        resolve(null);
+      }, 1500);
+      function onMessage(event) {
+        if (event.source !== window || event.data?.type !== 'mf-mse-tap-report') return;
+        clearTimeout(timer);
+        window.removeEventListener('message', onMessage);
+        resolve(event.data);
+      }
+      window.addEventListener('message', onMessage);
+      window.postMessage({ type: 'mf-mse-tap-request' }, '*');
+    });
+  }
+
+  async function describeAudioDecoder() {
+    if (typeof AudioDecoder !== 'function') return 'WebCodecs AudioDecoder: missing';
+    try {
+      const { supported } = await AudioDecoder.isConfigSupported({ codec: 'opus', sampleRate: 48000, numberOfChannels: 2 });
+      return `WebCodecs AudioDecoder opus: ${supported ? 'supported' : 'unsupported'}`;
+    } catch (error) {
+      return `WebCodecs AudioDecoder opus: error ${error?.message ?? error}`;
+    }
+  }
+
+  async function describeTap() {
+    const report = await requestTapReport();
+    if (!report) return ['MSE tap: not installed (MAIN-world script did not run)'];
+    const lines = [
+      `MSE tap: hooks=${report.installed.join(',') || 'none'} audioMime=${report.audioMime ?? 'none'}`,
+      `MSE tap: audio appends=${report.audioAppends} bytes=${report.audioBytes} video appends=${report.videoAppends}`,
+    ];
+    lines.push(await describeAudioDecoder());
+    if (!report.stream?.byteLength) return [...lines, 'MSE decode: no audio segments captured yet'];
+    const joined = report.stream;
+    const context = new AudioContext();
+    try {
+      const decoded = await context.decodeAudioData(joined.buffer);
+      let peak = 0;
+      for (let c = 0; c < decoded.numberOfChannels; c++) {
+        for (const sample of decoded.getChannelData(c)) peak = Math.max(peak, Math.abs(sample));
+      }
+      lines.push(`MSE decode (${(joined.byteLength / 1024).toFixed(0)} KB stream): OK ${decoded.duration.toFixed(2)} s ${decoded.numberOfChannels} ch ${decoded.sampleRate} Hz peak=${peak.toFixed(4)}`);
+    } catch (error) {
+      lines.push(`MSE decode (${(joined.byteLength / 1024).toFixed(0)} KB stream): FAILED ${error?.name ?? ''} ${error?.message ?? error}`);
+    } finally {
+      await context.close();
+    }
+    return lines;
+  }
+
   async function diagnose() {
     const lines = [
       `UA: ${navigator.userAgent}`,
       `MediaSource=${'MediaSource' in window} ManagedMediaSource=${'ManagedMediaSource' in window}`,
       `AudioWorklet=${typeof AudioWorkletNode === 'function'} WebGPU=${'gpu' in navigator} wasmSIMD=${WebAssembly.validate(WASM_SIMD_PROBE)} isolated=${self.crossOriginIsolated}`,
     ];
+    lines.push(...(await describeTap()));
     const video = pickVideo();
     if (!video) lines.push('video: none found');
     ui.line('diag', lines.join('\n'));
