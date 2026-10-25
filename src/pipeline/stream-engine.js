@@ -2,7 +2,7 @@ import { FrameDecoder, isSameDecoderConfig } from './frame-decoder.js';
 import { PcmTimeline } from './pcm-timeline.js';
 import { addRange, contiguousEnd, trimBefore } from './ranges.js';
 import { WebmDemuxer } from './webm-demuxer.js';
-import { bridgedStart, isStarved, planNextWindow } from './window-planner.js';
+import { bridgedEnd, bridgedStart, isStarved, planNextWindow } from './window-planner.js';
 
 export const DEFAULT_CONFIG = {
   sampleRate: 48000,
@@ -19,6 +19,10 @@ export const DEFAULT_CONFIG = {
   starvedRearmSeconds: 1,
 };
 
+// An Opus packet is at most 120 ms, and the decoder discards up to 80 ms of pre-roll after a gap, so a
+// packet is only dropped once that much audio separates it from the oldest sample still kept.
+const STALE_PACKET_MARGIN_SECONDS = 0.25;
+
 function trimAfter(ranges, point) {
   return ranges.filter(([s]) => s < point).map(([s, e]) => [s, Math.min(e, point)]);
 }
@@ -34,9 +38,9 @@ class PacketQueue {
     return this.items.length - this.head;
   }
 
-  push(entry) {
-    this.items.push(entry);
-    this.bytes += entry.frame?.data.byteLength ?? 0;
+  push(frame) {
+    this.items.push(frame);
+    this.bytes += frame.data.byteLength;
   }
 
   peek() {
@@ -44,15 +48,15 @@ class PacketQueue {
   }
 
   shift() {
-    const entry = this.items[this.head];
+    const frame = this.items[this.head];
     this.items[this.head] = undefined;
     this.head += 1;
-    this.bytes -= entry.frame?.data.byteLength ?? 0;
+    this.bytes -= frame.data.byteLength;
     if (this.head >= 1024 && this.head * 2 >= this.items.length) {
       this.items = this.items.slice(this.head);
       this.head = 0;
     }
-    return entry;
+    return frame;
   }
 }
 
@@ -95,8 +99,8 @@ export class StreamEngine {
     });
     this.decoder?.free();
     this.decoder = null;
-    this.latestInit = null;
-    this.packets = new PacketQueue();
+    this.segments = [];
+    this.activeSegment = null;
     this.timeline = new PcmTimeline({ channels: 2, pageSamples: this.config.sampleRate });
     this.processed = [];
     this.inFlight = null;
@@ -104,7 +108,7 @@ export class StreamEngine {
     this.playhead = 0;
     this.isPlaying = false;
     this.ready = Promise.resolve();
-    this.hasDecoded = false;
+    this.hasSeenAudio = false;
     this.starvedAt = null;
   }
 
@@ -148,26 +152,76 @@ export class StreamEngine {
     return Math.round(frame.timeSeconds * this.config.sampleRate);
   }
 
+  queuedPackets() {
+    let count = 0;
+    let bytes = 0;
+    for (const { packets } of this.segments) {
+      count += packets.length;
+      bytes += packets.bytes;
+    }
+    return { count, bytes };
+  }
+
   hasPendingDecode() {
     if (this.decoder && !this.decoder.isReady) return true;
-    const next = this.packets.peek();
-    if (!next) return false;
-    return Boolean(next.init) || this.frameSample(next.frame) < this.decodeLimit();
+    const segment = this.selectSegment();
+    return segment !== null && this.isDecodable(segment);
+  }
+
+  isDecodable(segment) {
+    const next = segment.packets.peek();
+    return next !== undefined && this.frameSample(next) < this.decodeLimit();
+  }
+
+  decodedFrontier() {
+    return bridgedEnd(this.timeline.ranges, this.playhead, this.config.maxStartGapSeconds * this.config.sampleRate);
+  }
+
+  // Segments arrive in append order, which after a backward seek is not time order. Decoding sticks to
+  // one segment where it can, because every switch costs the decoder its continuity.
+  selectSegment() {
+    const frontier = this.decodedFrontier() + this.config.maxStartGapSeconds * this.config.sampleRate;
+    const continues = (segment) => this.isDecodable(segment) && this.frameSample(segment.packets.peek()) <= frontier;
+    const active = this.activeSegment;
+    const continuing = this.segments.find(continues) ?? null;
+    if (active && this.isDecodable(active) && (continues(active) || !continuing)) return active;
+    if (continuing) return continuing;
+    if (!active) return this.segments.find((segment) => this.isDecodable(segment)) ?? this.segments[0] ?? null;
+    return this.segments.slice(this.segments.indexOf(active) + 1).find((segment) => this.isDecodable(segment)) ?? null;
+  }
+
+  dropStalePackets() {
+    const { sampleRate: rate, keepBehindSeconds } = this.config;
+    const staleBefore = this.playhead - (keepBehindSeconds + STALE_PACKET_MARGIN_SECONDS) * rate;
+    for (const { packets } of this.segments) {
+      while (packets.length > 0 && this.frameSample(packets.peek()) < staleBefore) {
+        packets.shift();
+        this.hasSeenAudio = true;
+      }
+    }
+    const last = this.segments.at(-1);
+    this.segments = this.segments.filter((segment) => segment === last || segment.packets.length > 0);
+    if (!this.segments.includes(this.activeSegment)) this.activeSegment = null;
+  }
+
+  enterSegment(segment) {
+    this.activeSegment = segment;
+    if (this.decoder && isSameDecoderConfig(this.decoder.init, segment.init)) this.decoder.markJoin();
+    else this.configureDecoder(segment.init);
   }
 
   drainPackets() {
-    while (this.packets.length > 0 && this.halted === null) {
-      const { init, frame } = this.packets.peek();
-      if (init) {
-        if (this.decoder && !this.decoder.isReady) return;
-        this.packets.shift();
-        if (this.decoder && isSameDecoderConfig(this.decoder.init, init)) this.decoder.markJoin();
-        else this.configureDecoder(init);
+    if (this.halted !== null) return;
+    this.dropStalePackets();
+    while (this.halted === null && !(this.decoder && !this.decoder.isReady)) {
+      const segment = this.selectSegment();
+      if (!segment) return;
+      if (segment !== this.activeSegment) {
+        this.enterSegment(segment);
         continue;
       }
-      if (!this.decoder?.isReady || this.frameSample(frame) >= this.decodeLimit()) return;
-      this.packets.shift();
-      this.decodeFrame(frame);
+      if (!this.isDecodable(segment)) return;
+      this.decodeFrame(segment.packets.shift());
     }
   }
 
@@ -177,8 +231,7 @@ export class StreamEngine {
       this.onStatus({ stage: 'unsupported', reason: this.halted });
       return;
     }
-    this.latestInit = init;
-    this.packets.push({ init });
+    this.segments.push({ init, packets: new PacketQueue() });
     this.drainPackets();
   }
 
@@ -201,15 +254,15 @@ export class StreamEngine {
   }
 
   handleFrame(frame) {
-    if (this.halted || !this.latestInit) return;
-    this.packets.push({ frame });
+    if (this.halted || this.segments.length === 0) return;
+    this.segments.at(-1).packets.push(frame);
     this.drainPackets();
   }
 
   decodeFrame(frame) {
     const span = this.decoder.decode(frame);
     if (!span) return;
-    this.hasDecoded = true;
+    this.hasSeenAudio = true;
     const { sampleRate: rate, keepBehindSeconds } = this.config;
     const start = span.startSample;
     if (start + span.channelData[0].length <= this.playhead - keepBehindSeconds * rate) return;
@@ -257,7 +310,7 @@ export class StreamEngine {
   }
 
   reportIfStarved() {
-    if (!this.hasDecoded || this.hasPendingDecode()) return;
+    if (!this.hasSeenAudio || this.hasPendingDecode()) return;
     const { sampleRate: rate, starvedRearmSeconds } = this.config;
     if (this.starvedAt !== null && Math.abs(this.playhead - this.starvedAt) <= starvedRearmSeconds * rate) return;
     const starved = isStarved({

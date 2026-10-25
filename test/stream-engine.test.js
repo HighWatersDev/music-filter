@@ -238,7 +238,7 @@ test('a separator that throws synchronously reports an error instead of wedging 
 test('the engine is not idle while frames wait for the decoder', () => {
   const { engine } = startEngine();
   engine.pushChunk(bytes);
-  assert.ok(engine.packets.length > 0);
+  assert.ok(engine.queuedPackets().count > 0);
   assert.equal(engine.isIdle(), false);
 });
 
@@ -483,7 +483,7 @@ test('a long stream pushed in one burst plays through without starving, with con
   engine.pushChunk(long);
   await settle(engine);
   assert.ok(engine.timeline.ranges.at(-1)[1] <= 10.1 * S, 'decodes only up to playhead + keepAhead');
-  assert.ok(engine.packets.bytes > 0, 'keeps the rest as packets');
+  assert.ok(engine.queuedPackets().bytes > 0, 'keeps the rest as packets');
   let maxPages = 0;
   for (let seconds = 0; seconds <= 59; seconds += 0.25) {
     engine.setPlayhead(seconds, true);
@@ -498,7 +498,7 @@ test('a long stream pushed in one burst plays through without starving, with con
     end = Math.max(end, w.startSeconds + w.left.length / S);
   }
   assert.ok(end >= 59.9, `windows end at ${end} s`);
-  assert.equal(engine.packets.length, 0);
+  assert.equal(engine.queuedPackets().count, 0);
 });
 
 test('reports starved after a seek behind evicted audio even while packets wait ahead', async () => {
@@ -506,8 +506,77 @@ test('reports starved after a seek behind evicted audio even while packets wait 
   engine.setPlayhead(20, true);
   engine.pushChunk(long);
   await settle(engine);
-  assert.ok(engine.packets.length > 0);
+  assert.ok(engine.queuedPackets().count > 0);
   assert.deepEqual(starvedAt(statuses), []);
   engine.setPlayhead(5, true);
   assert.deepEqual(starvedAt(statuses), [5]);
+});
+
+const longClusters = clusterOffsets(long);
+const longInit = long.subarray(0, longClusters[0]);
+const longClustersFrom = (first, last = longClusters.length) => long.subarray(longClusters[first], longClusters[last] ?? long.length);
+
+function assertContiguous(windows, fromSeconds, toSeconds) {
+  let end = fromSeconds;
+  for (const w of windows) {
+    assert.ok(w.startSeconds <= end + 0.5, `gap before window at ${w.startSeconds} s, previous end ${end} s`);
+    end = Math.max(end, w.startSeconds + w.left.length / 48000);
+  }
+  assert.ok(end >= toSeconds, `windows end at ${end} s`);
+}
+
+async function playThrough(engine, fromSeconds, toSeconds) {
+  for (let seconds = fromSeconds; seconds <= toSeconds; seconds += 0.25) {
+    engine.setPlayhead(seconds, true);
+    await settle(engine);
+  }
+}
+
+test('packets that end before playhead minus keepBehind are dropped without decoding', async () => {
+  const { engine } = startEngine({ config: { keepBehindSeconds: 2, keepAheadSeconds: 10 }, playheadSeconds: 40 });
+  const decodedAt = [];
+  const decodeFrame = engine.decodeFrame.bind(engine);
+  engine.decodeFrame = (frame) => {
+    decodedAt.push(frame.timeSeconds);
+    decodeFrame(frame);
+  };
+  engine.pushChunk(long);
+  await settle(engine);
+  assert.ok(decodedAt.length > 0);
+  assert.ok(Math.min(...decodedAt) >= 37.5, `decoded a frame at ${Math.min(...decodedAt)} s`);
+  assert.ok(engine.timeline.ranges[0][0] <= 38 * 48000);
+});
+
+test('a segment re-appended after a backward seek is decoded even while later packets wait beyond the limit', async () => {
+  const config = { keepBehindSeconds: 2, keepAheadSeconds: 10, lookaheadSeconds: 5, windowSeconds: 4 };
+  const { engine, windows, statuses } = startEngine({ config, separate: async (left, right) => [left, right], playheadSeconds: 40 });
+  engine.pushChunk(longInit);
+  engine.pushChunk(longClustersFrom(4));
+  await settle(engine);
+  engine.setPlayhead(5, true);
+  assert.deepEqual(starvedAt(statuses), [5]);
+
+  const before = windows.length;
+  engine.pushChunk(longInit);
+  engine.pushChunk(longClustersFrom(1, 4));
+  await settle(engine);
+  assert.ok(windows.slice(before).some((w) => w.startSeconds >= 5 && w.startSeconds < 5.1), 'plans from the playhead');
+  await playThrough(engine, 5, 18);
+  assert.deepEqual(starvedAt(statuses), [5]);
+  assertContiguous(windows.slice(before), 5, 18);
+});
+
+test('a replay with the re-appended segment after the later one plays without starving', async () => {
+  const config = { keepBehindSeconds: 2, keepAheadSeconds: 10, lookaheadSeconds: 5, windowSeconds: 4 };
+  const { engine, windows, statuses } = startEngine({ config, separate: async (left, right) => [left, right], playheadSeconds: 5 });
+  engine.pushChunk(longInit);
+  engine.pushChunk(longClustersFrom(4));
+  engine.pushChunk(longInit);
+  engine.pushChunk(longClustersFrom(1, 4));
+  await settle(engine);
+  assert.ok(windows[0].startSeconds >= 5 && windows[0].startSeconds < 5.1, `first window at ${windows[0]?.startSeconds} s`);
+  await playThrough(engine, 5, 40);
+  assert.deepEqual(starvedAt(statuses), []);
+  assertContiguous(windows, 5, 40);
+  assert.equal(engine.timeline.ranges.length, 1, JSON.stringify(engine.timeline.ranges));
 });
