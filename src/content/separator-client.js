@@ -2,6 +2,13 @@ const SEPARATOR_PAGE = 'separator.html';
 const CONNECT = 'music-filter:connect';
 const START_TIMEOUT_MS = 15000;
 
+// Safari URLs like safari-web-extension://id/ have the opaque origin "null", which postMessage rejects.
+// '*' still delivers only to this frame's window, and the host page can already reach that frame.
+export function frameTargetOrigin(src) {
+  const { origin } = new URL(src);
+  return origin === 'null' ? '*' : origin;
+}
+
 export function connectSeparator({ onMessage }) {
   return new Promise((resolve, reject) => {
     const frame = document.createElement('iframe');
@@ -35,7 +42,7 @@ export function connectSeparator({ onMessage }) {
           channel.port1.onmessage = ({ data: message }) => onMessage(message);
           resolve({ port: channel.port1, frame, info: data });
         };
-        frame.contentWindow.postMessage({ type: CONNECT }, new URL(frame.src).origin, [channel.port2]);
+        frame.contentWindow.postMessage({ type: CONNECT }, frameTargetOrigin(frame.src), [channel.port2]);
       },
       { once: true },
     );
