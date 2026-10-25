@@ -15,8 +15,10 @@ Goal: remove music from videos as they play, starting with YouTube, with nothing
 |---|---|
 | Where videos play | YouTube first, other sites and restreaming later |
 | What remains after filtering | v1 voices only, v2 everything but music |
-| Devices | v1 desktop browsers, v2 mobile |
-| Audio access | Hook the page's `<video>` element (approach A) |
+| Devices | v1: desktop Chrome, Edge, Brave, Firefox and Safari, iPhone/iPad Safari (extension shipped in an App Store app), Firefox for Android. Chrome on phones has no extensions. Android Play Store wrapper app deferred (policy risk). Decided 2026-10-25. |
+| Audio access | Read-ahead: copy YouTube's audio appends in a MAIN-world script, decode, filter ahead of the playhead, play in sync. Replaces hooking the `<video>` element, which Safari returns silence for. Decided 2026-10-25. |
+| Model (v1) | DeepFilterNet3, voice only. Bundled, about 20x faster than real time, no download. MRX dropped because it leaves music audible. Decided 2026-10-25. |
+| When filtered audio is not ready | Pause the video until it is (like buffering). The original track is never played while the filter is on. Speeds other than 1x and unsupported audio are muted with a message. Decided 2026-10-25. |
 | Sung vocals | Allowed to leak in v1, fixed by a fine-tune in v1.1 |
 
 Rejected for v1:
