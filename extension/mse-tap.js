@@ -38,9 +38,23 @@
     queue.push(event);
   }
 
+  const wrapped = new WeakSet();
+  function ownerOf(proto, name) {
+    for (let current = proto; current && current !== Object.prototype; current = Object.getPrototypeOf(current)) {
+      if (Object.prototype.hasOwnProperty.call(current, name)) return current;
+    }
+    return null;
+  }
+
+  function claim(proto) {
+    if (!proto || wrapped.has(proto)) return false;
+    wrapped.add(proto);
+    return true;
+  }
+
   function wrapMediaSource(MediaSourceClass) {
-    const proto = MediaSourceClass?.prototype;
-    if (!proto || !Object.prototype.hasOwnProperty.call(proto, 'addSourceBuffer')) return;
+    const proto = ownerOf(MediaSourceClass?.prototype, 'addSourceBuffer');
+    if (!claim(proto)) return;
     const addSourceBuffer = proto.addSourceBuffer;
     proto.addSourceBuffer = function (mime) {
       const sourceBuffer = addSourceBuffer.call(this, mime);
@@ -55,8 +69,8 @@
   }
 
   function wrapSourceBuffer(SourceBufferClass) {
-    const proto = SourceBufferClass?.prototype;
-    if (!proto || !Object.prototype.hasOwnProperty.call(proto, 'appendBuffer')) return;
+    const proto = ownerOf(SourceBufferClass?.prototype, 'appendBuffer');
+    if (!claim(proto)) return;
     const appendBuffer = proto.appendBuffer;
     const abort = proto.abort;
     proto.appendBuffer = function (data) {
@@ -78,9 +92,10 @@
         return result;
       };
     }
-    const offset = Object.getOwnPropertyDescriptor(proto, 'timestampOffset');
+    const offsetOwner = ownerOf(proto, 'timestampOffset');
+    const offset = offsetOwner && Object.getOwnPropertyDescriptor(offsetOwner, 'timestampOffset');
     if (offset?.set && offset.configurable) {
-      Object.defineProperty(proto, 'timestampOffset', {
+      Object.defineProperty(offsetOwner, 'timestampOffset', {
         ...offset,
         set(value) {
           offset.set.call(this, value);
