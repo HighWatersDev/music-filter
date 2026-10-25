@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import { createSerialQueue, StreamEngine } from '../src/pipeline/stream-engine.js';
 
 const bytes = new Uint8Array(readFileSync(new URL('./fixtures/tone-12s.webm', import.meta.url)));
+const long = new Uint8Array(readFileSync(new URL('./fixtures/tone-60s.webm', import.meta.url)));
 const halve = async (left, right) => {
   await new Promise((resolve) => setTimeout(resolve, 1));
   return [left.map((s) => s * 0.5), right.map((s) => s * 0.5)];
@@ -18,6 +19,7 @@ function startEngine(options = {}) {
     onStatus: (s) => statuses.push(s),
     config: options.config,
     enqueue: options.enqueue,
+    playheadSeconds: options.playheadSeconds,
   });
   return { engine, windows, statuses };
 }
@@ -364,4 +366,81 @@ test('warmUpBeforeSeconds of 0 passes no context', async () => {
   await settle(engine);
   assert.ok(contexts.length >= 3);
   assert.ok(contexts.every((length) => length === 0));
+});
+
+const starvedAt = (statuses) => statuses.filter((s) => s.stage === 'starved').map((s) => s.seconds);
+
+test('reports starved once when the playhead jumps to audio evicted behind it, and again after a move', async () => {
+  const { engine, statuses } = startEngine({ config: { keepBehindSeconds: 2 } });
+  engine.pushChunk(bytes);
+  engine.setPlayhead(10, true);
+  await settle(engine);
+  assert.deepEqual(starvedAt(statuses), []);
+  engine.setPlayhead(2, true);
+  assert.deepEqual(starvedAt(statuses), [2]);
+  engine.setPlayhead(2, true);
+  engine.setPlayhead(2.5, true);
+  engine.pump();
+  assert.deepEqual(starvedAt(statuses), [2]);
+  engine.setPlayhead(4, true);
+  assert.deepEqual(starvedAt(statuses), [2, 4]);
+});
+
+test('a reset re-arms the starved report at the same playhead', async () => {
+  const { engine, statuses } = startEngine({ config: { keepBehindSeconds: 2 } });
+  engine.pushChunk(bytes);
+  engine.setPlayhead(10, true);
+  await settle(engine);
+  engine.setPlayhead(2, true);
+  engine.reset();
+  engine.pushChunk(bytes.subarray(0, 4096));
+  engine.setPlayhead(11, true);
+  await engine.ready;
+  engine.setPlayhead(11, true);
+  assert.deepEqual(starvedAt(statuses), [2, 11]);
+});
+
+test('starved is not reported before any audio has been decoded', async () => {
+  const firstCluster = bytes.findIndex((b, i) => b === 0x1f && bytes[i + 1] === 0x43 && bytes[i + 2] === 0xb6 && bytes[i + 3] === 0x75);
+  const { engine, statuses } = startEngine();
+  engine.setPlayhead(5, true);
+  engine.pushChunk(bytes.subarray(0, firstCluster));
+  await engine.ready;
+  engine.setPlayhead(5, true);
+  assert.deepEqual(starvedAt(statuses), []);
+});
+
+test('replaying a long stream writes only the span around the playhead, then plans from the playhead', async () => {
+  const S = 48000;
+  const { engine, windows } = startEngine({ config: { keepBehindSeconds: 5, keepAheadSeconds: 10 } });
+  engine.setPlayhead(30, false);
+  engine.pushChunk(long);
+  await engine.ready;
+  const frame = 0.06 * S;
+  assert.equal(engine.timeline.ranges.length, 1);
+  const [[start, end]] = engine.timeline.ranges;
+  assert.ok(start >= 25 * S - frame && start <= 25 * S, `starts at ${start / S} s`);
+  assert.ok(end >= 40 * S && end <= 40 * S + frame, `ends at ${end / S} s`);
+  assert.ok(engine.timeline.pages.size <= 17, `${engine.timeline.pages.size} pages`);
+  engine.setPlayhead(30, true);
+  await settle(engine);
+  assert.ok(Math.abs(windows[0].startSeconds - 30) < 0.001);
+});
+
+test('an engine created with a playhead plans from it once bytes arrive', async () => {
+  const { engine, windows } = startEngine({ playheadSeconds: 30 });
+  engine.pushChunk(long);
+  await settle(engine);
+  assert.ok(Math.abs(windows[0].startSeconds - 30) < 0.001);
+  assert.ok(engine.timeline.ranges[0][0] >= 0 && engine.timeline.ranges[0][0] < 1);
+});
+
+test('reports starved when planning reaches audio that was dropped ahead of the playhead', async () => {
+  const { engine, statuses } = startEngine({ config: { keepAheadSeconds: 10 } });
+  engine.setPlayhead(0, true);
+  engine.pushChunk(long);
+  await settle(engine);
+  assert.deepEqual(starvedAt(statuses), [0]);
+  engine.setPlayhead(0.5, true);
+  assert.deepEqual(starvedAt(statuses), [0]);
 });

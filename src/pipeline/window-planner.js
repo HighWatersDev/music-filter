@@ -21,6 +21,19 @@ export function bridgedStart(ranges, point, maxGap) {
   return start;
 }
 
+function processedRunEnd(processed, playhead, maxStartGap) {
+  const start = nextRangeStart(processed, playhead);
+  return start !== null && start - playhead <= maxStartGap ? contiguousEnd(processed, start) : playhead;
+}
+
+export function isStarved({ playhead, decoded, processed, cutAt, lookahead, maxStartGap }) {
+  if (processedRunEnd(processed, playhead, maxStartGap) - playhead >= lookahead) return false;
+  const start = nextRangeStart(decoded, playhead);
+  if (start === null || start - playhead > maxStartGap) return true;
+  if (cutAt === null) return false;
+  return Math.abs(bridgedEnd(decoded, start, maxStartGap) - cutAt) <= maxStartGap;
+}
+
 export function planNextWindow({
   playhead,
   decoded,
@@ -33,9 +46,7 @@ export function planNextWindow({
   urgency,
   maxStartGap,
 }) {
-  const processedStart = nextRangeStart(processed, playhead);
-  const processedEnd =
-    processedStart !== null && processedStart - playhead <= maxStartGap ? contiguousEnd(processed, processedStart) : playhead;
+  const processedEnd = processedRunEnd(processed, playhead, maxStartGap);
   const runway = processedEnd - playhead;
   if (runway >= lookahead) return null;
 

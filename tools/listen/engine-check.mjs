@@ -18,7 +18,7 @@ const engine = new StreamEngine({
   separate: async (left, right, sampleRate, options) => voiceFilter(left, right, options),
   onWindow: (w) => windows.push(w),
   onStatus: (s) => s.stage === 'window' && console.log(JSON.stringify(s)),
-  config: { lookaheadSeconds: 3600, urgencySeconds: 3600 },
+  config: { lookaheadSeconds: 3600, urgencySeconds: 3600, keepAheadSeconds: 3600 },
 });
 engine.pushChunk(bytes);
 engine.setPlayhead(0, true);

@@ -13,5 +13,6 @@ opus() {
 
 opus 12 "$ROOT/test/fixtures/tone-12s.webm"
 opus 6 "$ROOT/test/fixtures/tone-live-6s.webm" -live 1
+opus 60 "$ROOT/test/fixtures/tone-60s.webm" -b:a 24k
 opus 60 "$ROOT/test-page/fixtures/tone-60s.webm"
 ls -la "$ROOT/test/fixtures" "$ROOT/test-page/fixtures"

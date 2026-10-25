@@ -2,7 +2,7 @@ import { FrameDecoder } from './frame-decoder.js';
 import { PcmTimeline } from './pcm-timeline.js';
 import { addRange, contiguousEnd, trimBefore } from './ranges.js';
 import { WebmDemuxer } from './webm-demuxer.js';
-import { bridgedStart, planNextWindow } from './window-planner.js';
+import { bridgedStart, isStarved, planNextWindow } from './window-planner.js';
 
 export const DEFAULT_CONFIG = {
   sampleRate: 48000,
@@ -13,9 +13,10 @@ export const DEFAULT_CONFIG = {
   lookaheadSeconds: 30,
   urgencySeconds: 5,
   maxStartGapSeconds: 0.5,
-  keepBehindSeconds: 10,
+  keepBehindSeconds: 30,
   keepAheadSeconds: 90,
   warmUpBeforeSeconds: 2,
+  starvedRearmSeconds: 1,
 };
 
 function trimAfter(ranges, point) {
@@ -39,6 +40,7 @@ export class StreamEngine {
     onWarning = () => {},
     config = {},
     enqueue = createSerialQueue(),
+    playheadSeconds = 0,
   }) {
     this.separate = separate;
     this.enqueue = enqueue;
@@ -48,6 +50,7 @@ export class StreamEngine {
     this.config = { ...DEFAULT_CONFIG, ...config };
     this.generation = 0;
     this.reset();
+    this.playhead = Math.max(0, Math.round(playheadSeconds * this.config.sampleRate));
   }
 
   reset() {
@@ -67,6 +70,9 @@ export class StreamEngine {
     this.playhead = 0;
     this.isPlaying = false;
     this.ready = Promise.resolve();
+    this.hasDecoded = false;
+    this.cutAt = null;
+    this.starvedAt = null;
   }
 
   pushChunk(bytes) {
@@ -99,8 +105,14 @@ export class StreamEngine {
   evictTimelineAfter(point) {
     const { timeline } = this;
     const firstDropped = Math.ceil(point / timeline.pageSamples);
+    const cut = firstDropped * timeline.pageSamples;
     for (const index of [...timeline.pages.keys()]) if (index >= firstDropped) timeline.pages.delete(index);
-    timeline.ranges = trimAfter(timeline.ranges, firstDropped * timeline.pageSamples);
+    if (timeline.ranges.some(([, e]) => e > cut)) this.markCut(cut);
+    timeline.ranges = trimAfter(timeline.ranges, cut);
+  }
+
+  markCut(sample) {
+    this.cutAt = Math.min(this.cutAt ?? Infinity, sample);
   }
 
   isIdle() {
@@ -143,7 +155,16 @@ export class StreamEngine {
 
   decodeFrame(frame) {
     const span = this.decoder.decode(frame);
-    if (span) this.timeline.write(span.startSample, span.channelData);
+    if (!span) return;
+    this.hasDecoded = true;
+    const { sampleRate: rate, keepBehindSeconds, keepAheadSeconds } = this.config;
+    const start = span.startSample;
+    if (start >= this.playhead + keepAheadSeconds * rate) {
+      this.markCut(start);
+      return;
+    }
+    if (start + span.channelData[0].length <= this.playhead - keepBehindSeconds * rate) return;
+    this.timeline.write(start, span.channelData);
   }
 
   plan() {
@@ -186,10 +207,30 @@ export class StreamEngine {
     return this.readWindow({ start: from, end: start });
   }
 
+  reportIfStarved() {
+    if (!this.hasDecoded || !this.decoder?.isReady || this.queuedFrames.length > 0) return;
+    const { sampleRate: rate, starvedRearmSeconds } = this.config;
+    if (this.starvedAt !== null && Math.abs(this.playhead - this.starvedAt) <= starvedRearmSeconds * rate) return;
+    const starved = isStarved({
+      playhead: this.playhead,
+      decoded: this.timeline.ranges,
+      processed: this.processed,
+      cutAt: this.cutAt,
+      lookahead: this.config.lookaheadSeconds * rate,
+      maxStartGap: this.config.maxStartGapSeconds * rate,
+    });
+    if (!starved) return;
+    this.starvedAt = this.playhead;
+    this.onStatus({ stage: 'starved', seconds: this.playhead / rate });
+  }
+
   pump() {
     if (this.inFlight || this.halted) return;
     const window = this.plan();
-    if (!window) return;
+    if (!window) {
+      this.reportIfStarved();
+      return;
+    }
     const pcm = this.readWindow(window);
     const contextBefore = this.readContextBefore(window);
 
