@@ -5,6 +5,10 @@ export const LIVE_DETAIL = 'live, 40 ms delay';
 const SAFARI_VENDOR = 'Apple Computer, Inc.';
 const MODES = new Set(['live', 'read-ahead']);
 const OVERLOAD_WINDOW_FRAMES = 500;
+// The overload test counts frames longer than two render quanta, not one. The interactive output buffer
+// holds at least two quanta, so a single frame up to that long does not underrun. On YouTube (M2 Pro,
+// 2026-10-26) 5 s windows reached 5 to 10% over one quantum with no frame over budget, and the
+// one-quantum rule muted the filter about 10 s in.
 const OVERLOAD_MAX_RATIO = 0.05;
 const OUTPUT_RAMP_SECONDS = 0.03;
 
@@ -25,12 +29,12 @@ export function selectFilterMode({ vendor, hostname, override }) {
 export function createOverloadMonitor({ windowFrames = OVERLOAD_WINDOW_FRAMES, maxRatio = OVERLOAD_MAX_RATIO } = {}) {
   let windows = [];
   return {
-    record({ count, overQuantum }) {
-      windows.push({ count, overQuantum });
+    record({ count, overTwoQuanta }) {
+      windows.push({ count, overTwoQuanta });
       let frames = windows.reduce((total, w) => total + w.count, 0);
       while (frames - windows[0].count >= windowFrames) frames -= windows.shift().count;
       if (frames < windowFrames) return false;
-      const over = windows.reduce((total, w) => total + w.overQuantum, 0);
+      const over = windows.reduce((total, w) => total + w.overTwoQuanta, 0);
       return over / frames > maxRatio;
     },
     reset() {
@@ -44,7 +48,15 @@ function createStatsSummary() {
   return {
     record(stats) {
       if (!stats.count) return;
-      const previous = totals ?? { frames: 0, meanMs: 0, worstP95Ms: 0, worstMaxMs: 0, overQuantum: 0, overBudget: 0 };
+      const previous = totals ?? {
+        frames: 0,
+        meanMs: 0,
+        worstP95Ms: 0,
+        worstMaxMs: 0,
+        overQuantum: 0,
+        overTwoQuanta: 0,
+        overBudget: 0,
+      };
       const frames = previous.frames + stats.count;
       totals = {
         frames,
@@ -52,6 +64,7 @@ function createStatsSummary() {
         worstP95Ms: Math.max(previous.worstP95Ms, stats.p95Ms),
         worstMaxMs: Math.max(previous.worstMaxMs, stats.maxMs),
         overQuantum: previous.overQuantum + (stats.overQuantum ?? 0),
+        overTwoQuanta: previous.overTwoQuanta + (stats.overTwoQuanta ?? 0),
         overBudget: previous.overBudget + (stats.overBudget ?? 0),
       };
     },

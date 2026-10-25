@@ -25,6 +25,7 @@ export class FrameStats {
       maxMs: 0,
       overBudget: 0,
       overQuantum: 0,
+      overTwoQuanta: 0,
       budgetMs: this.budgetMs,
       quantumMs: this.quantumMs,
     };
@@ -35,6 +36,7 @@ export class FrameStats {
     summary.maxMs = sorted[count - 1];
     summary.overBudget = sorted.filter((d) => d > this.budgetMs).length;
     summary.overQuantum = sorted.filter((d) => d > this.quantumMs).length;
+    summary.overTwoQuanta = sorted.filter((d) => d > 2 * this.quantumMs).length;
     return summary;
   }
 }

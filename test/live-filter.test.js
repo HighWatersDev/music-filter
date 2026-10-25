@@ -115,18 +115,18 @@ test('the mode override only applies on localhost and only with a known mode', (
 
 test('the overload monitor needs 5 s of frames before it judges', () => {
   const monitor = createOverloadMonitor();
-  for (let i = 0; i < 4; i++) assert.equal(monitor.record({ count: 100, overQuantum: 50 }), false);
-  assert.equal(monitor.record({ count: 100, overQuantum: 50 }), true);
+  for (let i = 0; i < 4; i++) assert.equal(monitor.record({ count: 100, overTwoQuanta: 50 }), false);
+  assert.equal(monitor.record({ count: 100, overTwoQuanta: 50 }), true);
 });
 
 test('the overload monitor trips above 5% over the last 5 s only', () => {
   const monitor = createOverloadMonitor();
-  for (let i = 0; i < 5; i++) assert.equal(monitor.record({ count: 100, overQuantum: 5 }), false);
-  assert.equal(monitor.record({ count: 100, overQuantum: 6 }), true);
-  for (let i = 0; i < 5; i++) monitor.record({ count: 100, overQuantum: 0 });
-  assert.equal(monitor.record({ count: 100, overQuantum: 20 }), false);
+  for (let i = 0; i < 5; i++) assert.equal(monitor.record({ count: 100, overTwoQuanta: 5 }), false);
+  assert.equal(monitor.record({ count: 100, overTwoQuanta: 6 }), true);
+  for (let i = 0; i < 5; i++) monitor.record({ count: 100, overTwoQuanta: 0 });
+  assert.equal(monitor.record({ count: 100, overTwoQuanta: 20 }), false);
   monitor.reset();
-  assert.equal(monitor.record({ count: 100, overQuantum: 100 }), false);
+  assert.equal(monitor.record({ count: 100, overTwoQuanta: 100 }), false);
 });
 
 test('while starting, the original is muted and nothing reaches the output', async () => {
@@ -224,25 +224,38 @@ test('an overloaded device mutes and says so instead of playing the original', a
   const { context, filter, filterNode, views, ready, post } = setup();
   filter.setEnabled(true, new FakeVideo());
   await ready();
-  for (let i = 0; i < 5; i++) post({ type: 'stats', count: 100, overQuantum: 10, meanMs: 2, p95Ms: 3, maxMs: 4 });
+  for (let i = 0; i < 5; i++) {
+    post({ type: 'stats', count: 100, overQuantum: 60, overTwoQuanta: 10, meanMs: 4, p95Ms: 6, maxMs: 9 });
+  }
 
   assert.equal(views.at(-1).state, 'too-slow');
   assert.equal(filterOutputOf(context, filterNode).gain.value, 0);
   assert.equal(originalGainOf(context).gain.value, 0);
 });
 
+test('frames just over one render quantum do not count as overload', async () => {
+  const { filter, views, ready, post } = setup();
+  filter.setEnabled(true, new FakeVideo());
+  await ready();
+  for (let i = 0; i < 10; i++) {
+    post({ type: 'stats', count: 100, overQuantum: 20, overTwoQuanta: 1, meanMs: 1.6, p95Ms: 3, maxMs: 12 });
+  }
+  assert.equal(views.at(-1).state, 'filtered');
+});
+
 test('stats are summarised for the panel', async () => {
   const { filter, views, ready, post } = setup();
   filter.setEnabled(true, new FakeVideo());
   await ready();
-  post({ type: 'stats', count: 100, overQuantum: 1, overBudget: 0, meanMs: 1, p95Ms: 2, maxMs: 3 });
-  post({ type: 'stats', count: 100, overQuantum: 0, overBudget: 0, meanMs: 2, p95Ms: 1, maxMs: 5 });
+  post({ type: 'stats', count: 100, overQuantum: 1, overTwoQuanta: 1, overBudget: 0, meanMs: 1, p95Ms: 2, maxMs: 3 });
+  post({ type: 'stats', count: 100, overQuantum: 0, overTwoQuanta: 0, overBudget: 0, meanMs: 2, p95Ms: 1, maxMs: 5 });
   assert.deepEqual(views.at(-1).stats, {
     frames: 200,
     meanMs: 1.5,
     worstP95Ms: 2,
     worstMaxMs: 5,
     overQuantum: 1,
+    overTwoQuanta: 1,
     overBudget: 0,
   });
 });

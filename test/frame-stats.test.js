@@ -13,6 +13,7 @@ test('drain summarises recorded durations and resets', () => {
     maxMs: 100,
     overBudget: 10,
     overQuantum: 50,
+    overTwoQuanta: 0,
     budgetMs: 90,
     quantumMs: 50,
   });
@@ -28,7 +29,16 @@ test('drain with no samples returns zeros', () => {
     maxMs: 0,
     overBudget: 0,
     overQuantum: 0,
+    overTwoQuanta: 0,
     budgetMs: 10,
     quantumMs: 2.5,
   });
+});
+
+test('overTwoQuanta counts frames longer than two render quanta', () => {
+  const stats = new FrameStats({ budgetMs: 10, quantumMs: 2.5 });
+  for (const ms of [1, 2.6, 4.9, 5, 5.1, 7, 12]) stats.record(ms);
+  const summary = stats.drain();
+  assert.equal(summary.overQuantum, 6);
+  assert.equal(summary.overTwoQuanta, 3);
 });
