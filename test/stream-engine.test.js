@@ -103,3 +103,62 @@ test('a bad OpusHead halts the engine and reports it', async () => {
   assert.ok(statuses.some((s) => s.stage === 'error' && /OpusHead/.test(s.message)));
   assert.equal(engine.isIdle(), true);
 });
+
+const chunked = (size) => {
+  const chunks = [];
+  for (let offset = 0; offset < bytes.length; offset += size) chunks.push(bytes.subarray(offset, offset + size));
+  return chunks;
+};
+
+test('a window spans a tiny hole in decoded audio with silence and keeps processed contiguous', async () => {
+  const S = 48000;
+  const inputs = [];
+  const capture = async (left, right) => {
+    inputs.push(left);
+    return [left, right];
+  };
+  const { engine } = startEngine({ separate: capture });
+  const ones = (length) => [new Float32Array(length).fill(1), new Float32Array(length).fill(1)];
+  engine.timeline.write(0, ones(5 * S));
+  engine.timeline.write(5 * S + 360, ones(55 * S - 360));
+  engine.processed = [[0, 5 * S]];
+  engine.setPlayhead(1, true);
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(inputs[0].length, 10 * S);
+  assert.ok(inputs[0].subarray(1 * S, 1 * S + 360).every((sample) => sample === 0));
+  assert.ok(inputs[0].subarray(0, 1 * S).every((sample) => sample === 1));
+  assert.ok(inputs[0].subarray(1 * S + 360).every((sample) => sample === 1));
+  assert.equal(engine.processed.length, 1);
+  assert.equal(engine.processed[0][0], 0);
+  assert.ok(engine.processed[0][1] >= 14 * S);
+});
+
+test('planning runs once per pushed chunk, so a large chunk gives a full first window', async () => {
+  const [head, ...rest] = chunked(2048);
+  const { engine, windows } = startEngine();
+  engine.setPlayhead(0, true);
+  engine.pushChunk(head);
+  await engine.ready;
+  const tail = new Uint8Array(rest.reduce((n, c) => n + c.length, 0));
+  rest.reduce((offset, c) => (tail.set(c, offset), offset + c.length), 0);
+  engine.pushChunk(tail);
+  await settle(engine);
+  assert.ok(Math.abs(windows[0].left.length / 48000 - 2) < 0.001);
+});
+
+test('streaming in 2 KB chunks gives windows that each add at least the minimum of new audio', async () => {
+  const { engine, windows } = startEngine({ separate: async (left, right) => [left, right] });
+  engine.setPlayhead(0, true);
+  for (const chunk of chunked(2048)) {
+    engine.pushChunk(chunk);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  await settle(engine);
+  let processedEnd = 0;
+  for (const w of windows) {
+    const end = w.startSeconds + w.left.length / 48000;
+    assert.ok(end - processedEnd >= 0.999, `window at ${w.startSeconds} adds only ${end - processedEnd} s`);
+    processedEnd = end;
+  }
+  assert.ok(windows.length <= 6, `${windows.length} windows`);
+});

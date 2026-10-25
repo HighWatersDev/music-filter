@@ -47,7 +47,11 @@ export class StreamEngine {
   }
 
   pushChunk(bytes) {
-    this.demuxer.push(bytes);
+    try {
+      this.demuxer.push(bytes);
+    } finally {
+      this.pump();
+    }
   }
 
   abort() {
@@ -99,7 +103,6 @@ export class StreamEngine {
       return;
     }
     this.decodeFrame(frame);
-    this.pump();
   }
 
   decodeFrame(frame) {
@@ -123,12 +126,27 @@ export class StreamEngine {
     });
   }
 
+  readWindow({ start, end }) {
+    const length = end - start;
+    const covered = this.timeline.read(start, length);
+    if (covered) return covered;
+    const out = [new Float32Array(length), new Float32Array(length)];
+    for (const [s, e] of this.timeline.ranges) {
+      const from = Math.max(s, start);
+      const to = Math.min(e, end);
+      if (to <= from) continue;
+      const [left, right] = this.timeline.read(from, to - from);
+      out[0].set(left, from - start);
+      out[1].set(right, from - start);
+    }
+    return out;
+  }
+
   pump() {
     if (this.inFlight || this.halted) return;
     const window = this.plan();
     if (!window) return;
-    const pcm = this.timeline.read(window.start, window.end - window.start);
-    if (!pcm) return;
+    const pcm = this.readWindow(window);
 
     const { generation } = this;
     const rate = this.config.sampleRate;

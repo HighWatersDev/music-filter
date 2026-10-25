@@ -45,11 +45,46 @@ test('waits for more decoded audio unless the window is urgent', () => {
   assert.deepEqual(urgent, { start: 9 * S, end: 15 * S });
 });
 
-test('never plans a window shorter than the minimum', () => {
-  const tooShort = planNextWindow({ ...base, playhead: 9 * S, decoded: [[0, 10.5 * S]], processed: [[0, 10 * S]] });
+test('an urgent window needs the minimum of new audio past the processed end, not counting the overlap', () => {
+  const tooShort = planNextWindow({ ...base, playhead: 7 * S, decoded: [[0, 11.5 * S]], processed: [[0, 10 * S]] });
   assert.equal(tooShort, null);
-  const exactlyMinimum = planNextWindow({ ...base, playhead: 9 * S, decoded: [[0, 11 * S]], processed: [[0, 10 * S]] });
-  assert.deepEqual(exactlyMinimum, { start: 9 * S, end: 11 * S });
+  const exactlyMinimum = planNextWindow({ ...base, playhead: 7 * S, decoded: [[0, 12 * S]], processed: [[0, 10 * S]] });
+  assert.deepEqual(exactlyMinimum, { start: 9 * S, end: 12 * S });
+});
+
+test('a first window needs the minimum of decoded audio from its start', () => {
+  assert.equal(planNextWindow({ ...base, playhead: 0, decoded: [[0, 1.5 * S]], processed: [] }), null);
+  assert.deepEqual(planNextWindow({ ...base, playhead: 0, decoded: [[0, 2 * S]], processed: [] }), { start: 0, end: 2 * S });
+});
+
+test('when the playhead is within the minimum of the processed end, any new audio is planned', () => {
+  const plan = planNextWindow({ ...base, playhead: 9.2 * S, decoded: [[0, 10.5 * S]], processed: [[0, 10 * S]] });
+  assert.deepEqual(plan, { start: 9 * S, end: 10.5 * S });
+});
+
+test('a tiny hole in decoded audio is bridged so the next window continues the processed range', () => {
+  const decoded = [[0, 5 * S], [5 * S + 360, 60 * S]];
+  for (const playhead of [1 * S, 4 * S]) {
+    const plan = planNextWindow({ ...base, playhead, decoded, processed: [[0, 5 * S]] });
+    assert.deepEqual(plan, { start: 4 * S, end: 14 * S });
+    assert.ok(plan.end > 5 * S + 360);
+  }
+});
+
+test('a re-sent init that leaves a hole does not stop planning', () => {
+  const decoded = [[312, 239040], [239400, 576960]];
+  const plan = planNextWindow({ ...base, playhead: 1 * S, decoded, processed: [[312, 239040]] });
+  assert.deepEqual(plan, { start: 239040 - S, end: 576960 });
+});
+
+test('a first window bridges a tiny hole too', () => {
+  const plan = planNextWindow({ ...base, playhead: 0, decoded: [[0, 1 * S], [1 * S + 360, 60 * S]], processed: [] });
+  assert.deepEqual(plan, { start: 0, end: 4 * S });
+});
+
+test('a hole wider than maxStartGap is not bridged', () => {
+  const plan = planNextWindow({ ...base, playhead: 1 * S, decoded: [[0, 5 * S], [6 * S, 60 * S]], processed: [[0, 5 * S]] });
+  assert.equal(plan, null);
 });
 
 test('after a seek, plans from the new playhead', () => {

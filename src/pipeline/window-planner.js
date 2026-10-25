@@ -1,5 +1,15 @@
 import { contiguousEnd, nextRangeStart } from './ranges.js';
 
+export function bridgedEnd(ranges, point, maxGap) {
+  let end = contiguousEnd(ranges, point);
+  for (const [s, e] of ranges) {
+    if (e <= end) continue;
+    if (s - end > maxGap) break;
+    end = e;
+  }
+  return end;
+}
+
 export function planNextWindow({
   playhead,
   decoded,
@@ -15,20 +25,21 @@ export function planNextWindow({
   const processedStart = nextRangeStart(processed, playhead);
   const processedEnd =
     processedStart !== null && processedStart - playhead <= maxStartGap ? contiguousEnd(processed, processedStart) : playhead;
-  if (processedEnd - playhead >= lookahead) return null;
+  const runway = processedEnd - playhead;
+  if (runway >= lookahead) return null;
 
   const continuing = processedEnd > playhead;
-  let start = continuing ? processedEnd - overlap : playhead;
-  const decodedStart = nextRangeStart(decoded, start);
-  if (decodedStart === null || decodedStart - start > maxStartGap) return null;
-  start = decodedStart;
+  const anchor = continuing ? processedEnd - overlap : playhead;
+  const start = nextRangeStart(decoded, anchor);
+  if (start === null || start - anchor > maxStartGap) return null;
 
   const target = start + (continuing ? window : firstWindow);
-  const decodedEnd = contiguousEnd(decoded, start);
+  const decodedEnd = bridgedEnd(decoded, start, maxStartGap);
   if (decodedEnd >= target) return { start, end: target };
-  if (decodedEnd <= processedEnd) return null;
 
-  const isUrgent = (continuing ? processedEnd : start) - playhead <= urgency;
-  if (!isUrgent || decodedEnd - start < minWindow) return null;
+  const fresh = decodedEnd - (continuing ? processedEnd : start);
+  if (fresh <= 0) return null;
+  if (continuing && runway <= minWindow) return { start, end: decodedEnd };
+  if (fresh < minWindow || (continuing ? processedEnd : start) - playhead > urgency) return null;
   return { start, end: decodedEnd };
 }
