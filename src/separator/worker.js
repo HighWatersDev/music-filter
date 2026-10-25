@@ -194,13 +194,14 @@ function createWindowFilter(model, streamId) {
 
 function handleStream(data) {
   if (data.type === 'stream-reset') {
-    const { streamId, model } = data;
+    const { streamId, model, playheadSeconds = 0 } = data;
     stream?.engine.reset();
     stream = {
       id: streamId,
       engine: new StreamEngine({
         separate: createWindowFilter(model, streamId),
         enqueue: enqueueSeparation,
+        playheadSeconds,
         onWindow: (window) => {
           const transfer = [...new Set([window.left.buffer, window.right.buffer])];
           post({ type: 'window', streamId, ...window }, transfer);

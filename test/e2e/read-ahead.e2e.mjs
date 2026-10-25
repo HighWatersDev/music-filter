@@ -36,8 +36,8 @@ const snapshot = (page) =>
       currentTime: video.currentTime,
     };
   });
-const waitFor = async (page, label, isDone) => {
-  const deadline = Date.now() + TIMEOUT_MS;
+const waitFor = async (page, label, isDone, timeoutMs = TIMEOUT_MS) => {
+  const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const current = await snapshot(page);
     if (current.panel.state === 'error') throw new Error(`panel error: ${await page.textContent('[data-state]')}`);
@@ -105,6 +105,17 @@ try {
   console.log('muted at 1.5x', muted);
   await video(page, () => (document.querySelector('video').playbackRate = 1));
   await waitFor(page, 'filtered at 1x', (s) => s.panel.state === 'filtered' && !s.paused);
+
+  await waitFor(page, 'playback past 45 s', (s) => s.currentTime >= 45);
+  const rewoundAt = Date.now();
+  await video(page, () => (document.querySelector('video').currentTime = 5));
+  const rewound = await waitFor(
+    page,
+    'resume after a seek back past the keep-behind',
+    (s) => s.currentTime >= 5 && s.currentTime < 30 && s.panel.state === 'filtered' && !s.paused,
+    useRealModel ? TIMEOUT_MS : 10_000,
+  );
+  console.log(`resumed ${Date.now() - rewoundAt} ms after seeking back to 5 s`, rewound);
 
   await video(page, () => document.querySelector('video').pause());
   await page.waitForTimeout(1500);

@@ -11,6 +11,7 @@ const TICK_MS = 250;
 const RETAINED_BYTES = 16 * 1024 * 1024;
 const MAX_STREAMS = 4;
 const OUTPUT_SAMPLE_RATE = 48000;
+const REPLAY_INTERVAL_MS = 5000;
 const TICK_EVENTS = ['play', 'playing', 'seeked', 'ratechange', 'waiting', 'pause', 'ended', 'emptied'];
 
 const isSafari = navigator.vendor === 'Apple Computer, Inc.';
@@ -59,7 +60,14 @@ function handleTapEvent(event) {
     return;
   }
   if (event.kind === 'source-buffer') {
-    streams.set(event.streamId, { ...event, init: null, chunks: [], retainedBytes: 0, timestampOffset: 0 });
+    streams.set(event.streamId, {
+      ...event,
+      init: null,
+      chunks: [],
+      retainedBytes: 0,
+      timestampOffset: 0,
+      lastReplayAt: -Infinity,
+    });
     for (const id of streams.keys()) {
       if (streams.size <= MAX_STREAMS) break;
       if (id !== activeStreamId) streams.delete(id);
@@ -149,6 +157,7 @@ function handleWorkerMessage(message, connection) {
   }
   if (message.type !== 'stream-status') return;
   if (message.stage === 'unsupported' || message.stage === 'error') fail(message.reason ?? message.message);
+  if (message.stage === 'starved') replay(message.streamId);
   if (message.stage === 'loading') detail = 'loading voice filter';
   if (message.stage === 'window') detail = `window ${message.durationSeconds.toFixed(0)} s in ${(message.computeMs / 1000).toFixed(1)} s`;
 }
@@ -227,9 +236,23 @@ function activate(stream) {
     fail(problem);
     return;
   }
-  send({ type: 'stream-reset', streamId: stream.streamId, mime: stream.mime, model: MODEL });
+  sendRetained(stream);
+}
+
+function sendRetained(stream) {
+  const playheadSeconds = attachedVideo?.currentTime ?? 0;
+  send({ type: 'stream-reset', streamId: stream.streamId, mime: stream.mime, model: MODEL, playheadSeconds });
   if (stream.init) sendChunk(stream.streamId, stream.init);
   for (const chunk of stream.chunks) sendChunk(stream.streamId, chunk);
+}
+
+function replay(streamId) {
+  const stream = streams.get(streamId);
+  const now = performance.now();
+  if (!stream || currentFailure() || now - stream.lastReplayAt < REPLAY_INTERVAL_MS) return;
+  stream.lastReplayAt = now;
+  detail = 'reloading audio';
+  sendRetained(stream);
 }
 
 function deactivate() {
