@@ -267,3 +267,35 @@ test('a fallback mute restored before the primary control leaves the user settin
   assert.equal(video.muted, false);
   assert.equal(video.volume, 0.7);
 });
+
+test('onRoute hands over the element source once, when the element is routed', () => {
+  const context = fakeContext();
+  const routes = [];
+  const registry = createOriginalAudioRegistry({ mode: 'graph', onRoute: (video, source) => routes.push([video, source]) });
+  const video = new FakeVideo();
+  video.readyState = 0;
+  const control = registry.attach(video, context, { level: 0 });
+  assert.equal(routes.length, 0);
+  assert.equal(control.source, null);
+
+  video.loadMetadata();
+  registry.restoreAll();
+  registry.attach(video, context, { level: 0 });
+  assert.equal(routes.length, 1);
+  assert.equal(routes[0][0], video);
+  assert.equal(routes[0][1], control.source);
+  assert.ok(control.source);
+});
+
+test('onRoute is not called when routing fails', () => {
+  const context = fakeContext();
+  context.createMediaElementSource = () => {
+    throw new Error('InvalidStateError');
+  };
+  const routes = [];
+  const registry = createOriginalAudioRegistry({ mode: 'graph', onRoute: (...args) => routes.push(args) });
+  const control = registry.attach(new FakeVideo(), context, { level: 0 });
+  assert.equal(routes.length, 0);
+  assert.equal(control.source, null);
+  assert.match(control.error, /could not be routed/);
+});

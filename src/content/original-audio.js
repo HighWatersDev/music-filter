@@ -6,14 +6,14 @@ export function resolveUserVolume({ player, remembered }) {
   return source.muted ? 0 : Math.min(1, Math.max(0, source.volume));
 }
 
-export function createOriginalAudioRegistry({ mode, readPlayerVolume = () => null }) {
+export function createOriginalAudioRegistry({ mode, readPlayerVolume = () => null, onRoute = () => {} }) {
   const controls = new WeakMap();
   const attached = new Set();
   return {
     attach(video, context, { level }) {
       let control = controls.get(video);
       if (!control) {
-        control = createControl(video, context, { mode, level, readPlayerVolume });
+        control = createControl(video, context, { mode, level, readPlayerVolume, onRoute });
         controls.set(video, control);
       }
       attached.add(control);
@@ -29,20 +29,21 @@ export function createOriginalAudioRegistry({ mode, readPlayerVolume = () => nul
 
 const HAVE_METADATA = 1;
 
-function createControl(video, context, { mode, level, readPlayerVolume }) {
+function createControl(video, context, { mode, level, readPlayerVolume, onRoute }) {
   if (mode !== 'graph') return createMuteControl(video, { level, readPlayerVolume, error: null });
-  return createDeferredGraphControl(video, context, { level, readPlayerVolume });
+  return createDeferredGraphControl(video, context, { level, readPlayerVolume, onRoute });
 }
 
 // Routing an element before it has a source left YouTube stuck at 0:00 on Firefox for Android.
 // Metadata always arrives before the element can play audio, so waiting for it leaks nothing.
-function createDeferredGraphControl(video, context, { level: initialLevel, readPlayerVolume }) {
+function createDeferredGraphControl(video, context, { level: initialLevel, readPlayerVolume, onRoute }) {
   let level = initialLevel;
   let routed = null;
   const route = () => {
     if (routed || level === 1) return;
     video.removeEventListener('loadedmetadata', route);
     routed = routeToGraph(video, context, { level, readPlayerVolume });
+    if (routed.source) onRoute(video, routed.source);
   };
   const routeIfReady = () => {
     if (video.readyState >= HAVE_METADATA) route();
@@ -53,6 +54,9 @@ function createDeferredGraphControl(video, context, { level: initialLevel, readP
     },
     get error() {
       return routed?.error ?? null;
+    },
+    get source() {
+      return routed?.source ?? null;
     },
     setLevel(next) {
       level = next;
@@ -79,14 +83,15 @@ function routeToGraph(video, context, { level, readPlayerVolume }) {
   }
   source.connect(gain);
   gain.connect(context.destination);
-  return createGraphControl(video, context, gain, level);
+  return createGraphControl(video, context, { source, gain, level });
 }
 
-function createGraphControl(video, context, gain, initialLevel) {
+function createGraphControl(video, context, { source, gain, level: initialLevel }) {
   let level = initialLevel;
   return {
     mode: 'graph',
     error: null,
+    source,
     setLevel(next) {
       if (next === level) return;
       level = next;
