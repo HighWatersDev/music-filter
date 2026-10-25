@@ -1,14 +1,16 @@
 const MESSAGES = {
   off: () => '',
   waiting: () => 'Waiting for audio',
+  starting: () => 'Starting filter…',
   filtering: () => 'Filtering…',
-  filtered: (view) => `Filtered · ${view.aheadSeconds.toFixed(0)} s ready`,
+  filtered: (view) => (view.mode === 'live' ? 'Filtered' : `Filtered · ${view.aheadSeconds.toFixed(0)} s ready`),
   muted: () => 'Filter works at Normal speed',
+  'too-slow': () => 'This device is too slow to filter live',
   error: (view) => `Can't filter this video: ${view.detail}`,
 };
-const STATES_WITH_DETAIL = new Set(['waiting', 'filtering', 'filtered']);
+const STATES_WITH_DETAIL = new Set(['waiting', 'starting', 'filtering', 'filtered']);
 
-export function createPanel({ onToggle }) {
+export function createPanel({ onToggle, mode = 'read-ahead' }) {
   const root = document.createElement('div');
   Object.assign(root.style, {
     position: 'fixed',
@@ -35,7 +37,7 @@ export function createPanel({ onToggle }) {
   const status = document.createElement('div');
   root.append(button, status);
 
-  const view = { isOn: false, state: 'off', detail: '', aheadSeconds: 0, windows: 0, originalLevel: 1 };
+  const view = { mode, isOn: false, state: 'off', detail: '', aheadSeconds: 0, windows: 0, originalLevel: 1, stats: null };
   const render = () => {
     button.textContent = `Music filter: ${view.isOn ? 'ON' : 'OFF'}`;
     const extra = view.detail && STATES_WITH_DETAIL.has(view.state) ? ` · ${view.detail}` : '';
@@ -46,6 +48,7 @@ export function createPanel({ onToggle }) {
       aheadSeconds: view.aheadSeconds.toFixed(1),
       windows: String(view.windows),
     });
+    if (view.stats) root.dataset.stats = JSON.stringify(view.stats);
     if (!root.isConnected) document.documentElement.append(root);
   };
   button.addEventListener('click', (event) => {

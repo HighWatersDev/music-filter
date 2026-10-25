@@ -1,6 +1,7 @@
 import { canPlayProcessed, decideHold } from '../pipeline/hold-policy.js';
 import { findStreamForMedia, streamProblem } from '../pipeline/stream-match.js';
 import { createOriginalAudioRegistry } from './original-audio.js';
+import { selectFilterMode, startLiveFilter } from './live-filter.js';
 import { createPanel } from './panel.js';
 import { PlaybackScheduler } from './playback-scheduler.js';
 import { connectSeparator } from './separator-client.js';
@@ -37,9 +38,23 @@ let heldSince = null;
 let playRequestedAt = null;
 let tappedPlayerVolume = null;
 
-const panel = createPanel({ onToggle: (on) => setEnabled(on).catch((error) => failClosed(error.message)) });
-connectTap();
-setInterval(safeTick, TICK_MS);
+let panel;
+
+if (selectFilterMode({ vendor: navigator.vendor, hostname: location.hostname, override: readModeOverride() }) === 'live') {
+  startLiveFilter();
+} else {
+  panel = createPanel({ onToggle: (on) => setEnabled(on).catch((error) => failClosed(error.message)) });
+  connectTap();
+  setInterval(safeTick, TICK_MS);
+}
+
+function readModeOverride() {
+  try {
+    return localStorage.getItem('mf_mode');
+  } catch {
+    return null;
+  }
+}
 
 function connectTap() {
   const channel = new MessageChannel();
