@@ -44,8 +44,9 @@ test('reads the Opus track and every frame', () => {
   assert.equal(inits[0].sampleRate, 48000);
   assert.equal(inits[0].codecPrivate.length, 19);
   assert.equal(frames.length, 601);
-  assert.equal(frames[0].timeSeconds, 0);
-  assert.ok(Math.abs(frames[1].timeSeconds - 0.02) < 0.002);
+  assert.equal(inits[0].codecDelayNs, 6_500_000);
+  assert.equal(frames[0].timeSeconds, -0.0065);
+  assert.ok(Math.abs(frames[1].timeSeconds - (0.021 - 0.0065)) < 1e-9);
   assert.deepEqual(warnings, []);
 });
 
@@ -173,4 +174,24 @@ test('a Void element between clusters is skipped silently', () => {
   const { frames, warnings } = demux([spliced]);
   assert.equal(frames.length, 601);
   assert.deepEqual(warnings, []);
+});
+
+function blockGroupStream(discardPaddingBytes) {
+  const bytes = fixture('tone-12s.webm');
+  const [first] = clusterOffsets(bytes);
+  const opus = demux([bytes]).frames[5].data;
+  const block = [0xa1, 0x40 | ((4 + opus.length) >> 8), (4 + opus.length) & 0xff, 0x81, 0x00, 0x00, 0x00, ...opus];
+  const padding = [0x75, 0xa2, 0x80 | discardPaddingBytes.length, ...discardPaddingBytes];
+  const group = [0xa0, 0x40 | ((block.length + padding.length) >> 8), (block.length + padding.length) & 0xff, ...block, ...padding];
+  const cluster = [0x1f, 0x43, 0xb6, 0x75, 0x01, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xe7, 0x81, 0x00, ...group];
+  return { stream: [bytes.subarray(0, first), Uint8Array.from(cluster)], opus };
+}
+
+test('DiscardPadding in a BlockGroup is passed with the frame as signed nanoseconds', () => {
+  const positive = demux(blockGroupStream([0x00, 0x98, 0x96, 0x80]).stream);
+  assert.equal(positive.frames.length, 1);
+  assert.equal(positive.frames[0].discardPaddingNs, 10_000_000);
+  assert.deepEqual(positive.warnings, []);
+  const negative = demux(blockGroupStream([0xff, 0xb3, 0xb4, 0xc0]).stream);
+  assert.equal(negative.frames[0].discardPaddingNs, -5_000_000);
 });

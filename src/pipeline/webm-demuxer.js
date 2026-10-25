@@ -31,6 +31,13 @@ const MAX_LEAF_BYTES = 16 * 1024 * 1024;
 const MAX_SKIP_BYTES = 256 * 1024 * 1024;
 const AUDIO_TRACK_TYPE = 2;
 const LACING_BITS = 0x06;
+const DISCARD_PADDING = 0x75a2;
+
+function readInt(bytes) {
+  if (bytes.length === 0) return 0;
+  const unsigned = readUint(bytes);
+  return bytes[0] & 0x80 ? unsigned - 2 ** (8 * bytes.length) : unsigned;
+}
 
 export class WebmDemuxer {
   constructor({ onInit, onFrame, onWarning = () => {} }) {
@@ -102,6 +109,13 @@ export class WebmDemuxer {
         this.resetStream();
         this.offset = payloadStart;
         this.skipRemaining = size.isUnknown ? 0 : size.value;
+        continue;
+      }
+      if (id.value === ID.BLOCK_GROUP && !size.isUnknown && size.value <= MAX_LEAF_BYTES) {
+        const payloadEnd = payloadStart + size.value;
+        if (payloadEnd > buffer.length) return;
+        this.offset = payloadEnd;
+        this.readBlockGroup(buffer.subarray(payloadStart, payloadEnd));
         continue;
       }
       if (MASTERS.has(id.value)) {
@@ -256,7 +270,24 @@ export class WebmDemuxer {
     });
   }
 
-  readBlock(payload) {
+  readBlockGroup(payload) {
+    let block = null;
+    let discardPaddingNs = 0;
+    for (let offset = 0; offset < payload.length; ) {
+      const id = readVint(payload, offset, { keepMarker: true });
+      if (!id || id.error) return;
+      const size = readVint(payload, offset + id.length);
+      if (!size || size.error || size.isUnknown) return;
+      const start = offset + id.length + size.length;
+      offset = start + size.value;
+      if (offset > payload.length) return;
+      if (id.value === ID.BLOCK) block = payload.subarray(start, offset);
+      if (id.value === DISCARD_PADDING) discardPaddingNs = readInt(payload.subarray(start, offset));
+    }
+    if (block) this.readBlock(block, discardPaddingNs);
+  }
+
+  readBlock(payload, discardPaddingNs = 0) {
     if (!this.audioTrack) return;
     const trackNumber = readVint(payload, 0);
     if (!trackNumber || trackNumber.error || trackNumber.value !== this.audioTrack.number) return;
@@ -273,7 +304,10 @@ export class WebmDemuxer {
       this.onWarning('laced block skipped');
       return;
     }
-    const timeSeconds = ((this.clusterTimecode + relativeTimecode) * this.timecodeScale) / 1e9;
-    this.onFrame({ timeSeconds, data: payload.slice(headerEnd) });
+    const { codecDelayNs = 0 } = this.audioTrack;
+    const timeSeconds = ((this.clusterTimecode + relativeTimecode) * this.timecodeScale - codecDelayNs) / 1e9;
+    const frame = { timeSeconds, data: payload.slice(headerEnd) };
+    if (discardPaddingNs) frame.discardPaddingNs = discardPaddingNs;
+    this.onFrame(frame);
   }
 }

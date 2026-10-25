@@ -33,7 +33,7 @@ test('emits a short first window then overlapping windows', async () => {
   engine.setPlayhead(0, true);
   await settle(engine);
   assert.equal(windows.length, 2);
-  assert.ok(Math.abs(windows[0].startSeconds - 0.0065) < 0.001);
+  assert.equal(windows[0].startSeconds, 0);
   assert.ok(Math.abs(windows[0].left.length / 48000 - 2) < 0.001);
   assert.ok(Math.abs(windows[1].startSeconds - (windows[0].startSeconds + 1)) < 0.001);
   assert.equal(windows[1].sampleRate, 48000);
@@ -161,4 +161,23 @@ test('streaming in 2 KB chunks gives windows that each add at least the minimum 
     processedEnd = end;
   }
   assert.ok(windows.length <= 6, `${windows.length} windows`);
+});
+
+test('a re-sent init mid-stream leaves a pre-roll hole that processing continues across', async () => {
+  const clusters = [];
+  for (let i = 0; i + 4 <= bytes.length; i++) {
+    if (bytes[i] === 0x1f && bytes[i + 1] === 0x43 && bytes[i + 2] === 0xb6 && bytes[i + 3] === 0x75) clusters.push(i);
+  }
+  const { engine } = startEngine();
+  engine.setPlayhead(0, true);
+  engine.pushChunk(bytes.subarray(0, clusters[1]));
+  await settle(engine);
+  engine.pushChunk(bytes.subarray(0, clusters[0]));
+  engine.pushChunk(bytes.subarray(clusters[1]));
+  await settle(engine);
+  assert.equal(engine.timeline.ranges.length, 2);
+  const [[, holeStart], [holeEnd]] = engine.timeline.ranges;
+  assert.ok(holeEnd - holeStart >= 3840 && holeEnd - holeStart <= 3840 + 48);
+  assert.equal(engine.processed.length, 1);
+  assert.ok(engine.processed[0][1] > holeEnd + 48000);
 });

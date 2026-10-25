@@ -35,7 +35,7 @@ test('decodes a contiguous run into one gapless span', async () => {
   for (let i = 1; i < spans.length; i++) {
     assert.equal(spans[i].startSample, spans[i - 1].startSample + spans[i - 1].channelData[0].length);
   }
-  assert.equal(spans[0].startSample, 312);
+  assert.equal(spans[0].startSample, 0);
   const left = spans.flatMap((s) => Array.from(s.channelData[0]));
   let crossings = 0;
   for (let i = 1; i < left.length; i++) if (left[i - 1] < 0 && left[i] >= 0) crossings++;
@@ -62,4 +62,39 @@ test('free while configuring is safe', async () => {
   await configuring;
   assert.equal(decoder.isReady, false);
   assert.equal(decoder.decoder, null);
+});
+
+test('a decoder configured mid-stream discards the pre-roll, not just the pre-skip', async () => {
+  const { init, frames } = demuxFixture();
+  const decoder = new FrameDecoder();
+  await decoder.configure(init);
+  const spans = frames.slice(300).map((f) => decoder.decode(f)).filter(Boolean);
+  assert.equal(spans[0].startSample, Math.round(frames[300].timeSeconds * 48000) + 3840);
+  decoder.free();
+});
+
+test('samples before time zero are discarded', async () => {
+  const { init, frames } = demuxFixture();
+  const decoder = new FrameDecoder();
+  await decoder.configure(init);
+  const span = decoder.decode({ ...frames[0], timeSeconds: -0.01 });
+  assert.equal(span.startSample, 0);
+  assert.equal(span.channelData[0].length, 960 - 480);
+  decoder.free();
+});
+
+test('DiscardPadding trims the end for positive values and the start for negative ones', async () => {
+  const { init, frames } = demuxFixture();
+  const decoder = new FrameDecoder();
+  await decoder.configure(init);
+  const spans = frames.slice(0, 10).map((f) => decoder.decode(f)).filter(Boolean);
+  const last = spans.at(-1);
+  const expected = last.startSample + last.channelData[0].length;
+  const end = decoder.decode({ ...frames[10], discardPaddingNs: 10_000_000 });
+  assert.equal(end.startSample, expected);
+  assert.equal(end.channelData[0].length, 960 - 480);
+  const start = decoder.decode({ ...frames[11], discardPaddingNs: -5_000_000 });
+  assert.equal(start.startSample, expected + 960 + 240);
+  assert.equal(start.channelData[0].length, 960 - 240);
+  decoder.free();
 });

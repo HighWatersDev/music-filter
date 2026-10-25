@@ -34,24 +34,28 @@ export class FrameDecoder {
     this.preRollSamples = Math.round(((init.seekPreRollNs || DEFAULT_PRE_ROLL_SECONDS * 1e9) / 1e9) * this.sampleRate);
     this.toleranceSamples = Math.round(CONTINUITY_TOLERANCE_SECONDS * this.sampleRate);
     this.expectedNext = null;
-    this.discard = head.preSkip;
+    this.preSkip = head.preSkip;
+    this.discard = 0;
     this.isReady = true;
   }
 
-  decode({ timeSeconds, data }) {
+  decode({ timeSeconds, data, discardPaddingNs = 0 }) {
     const frameStart = Math.round(timeSeconds * this.sampleRate);
     let start = frameStart;
-    if (this.expectedNext !== null) {
-      if (Math.abs(frameStart - this.expectedNext) <= this.toleranceSamples) start = this.expectedNext;
-      else this.discard = this.preRollSamples;
-    }
+    if (this.expectedNext === null) this.discard = frameStart <= this.preSkip ? this.preSkip : this.preRollSamples;
+    else if (Math.abs(frameStart - this.expectedNext) <= this.toleranceSamples) start = this.expectedNext;
+    else this.discard = this.preRollSamples;
     const { channelData, samplesDecoded } = this.decoder.decodeFrame(data);
     if (!samplesDecoded) return null;
     this.expectedNext = start + samplesDecoded;
-    const skip = Math.min(this.discard, samplesDecoded);
-    this.discard -= skip;
-    if (skip === samplesDecoded) return null;
-    return { startSample: start + skip, channelData: channelData.map((channel) => channel.slice(skip, samplesDecoded)) };
+
+    const padding = Math.round((Math.abs(discardPaddingNs) / 1e9) * this.sampleRate);
+    const end = discardPaddingNs > 0 ? samplesDecoded - padding : samplesDecoded;
+    const preRollSkip = Math.min(this.discard, samplesDecoded);
+    this.discard -= preRollSkip;
+    const skip = Math.max(preRollSkip, discardPaddingNs < 0 ? padding : 0, -start);
+    if (skip >= end) return null;
+    return { startSample: start + skip, channelData: channelData.map((channel) => channel.slice(skip, end)) };
   }
 
   free() {
