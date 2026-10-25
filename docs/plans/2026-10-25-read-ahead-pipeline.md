@@ -2763,7 +2763,9 @@ git commit -m "feat(extension): read-ahead content script with scheduler and pau
 npm install --save-dev --save-exact playwright@1.49.1
 ```
 
-Then run `npx playwright install chromium`. It is a no-op when this Playwright version's Chromium is already cached. The `chromium-1248` folder already in `~/Library/Caches/ms-playwright` belongs to Playwright 1.64, not 1.49.1, so it does not count.
+Do not run `npx playwright install` against the shared cache. It deletes other Playwright versions' browsers from `~/Library/Caches/ms-playwright`, which already broke another project once. Playwright 1.49.1 needs `chromium-1148`, which is already in that cache.
+
+If `~/Library/Caches/ms-playwright/chromium-1148` is missing, run `PLAYWRIGHT_BROWSERS_PATH=.playwright npx playwright install chromium` and run the test with the same `PLAYWRIGHT_BROWSERS_PATH`. `.playwright/` is in `.gitignore`.
 
 **Step 3: `test/e2e/read-ahead.e2e.mjs`**
 
@@ -2891,6 +2893,10 @@ Expected: logs `filtered {...}`, `held then resumed after seek {...} [ 'filterin
 
 Run: `npm run build && node test/e2e/read-ahead.e2e.mjs --real-model`
 Expected: `PASS`. Nothing is downloaded, the Worker loads the model from `extension/assets`. On a pure tone the filtered audio is near silent, which does not affect the checks. Note how long the first `filtered` and the hold after the seek took.
+
+Measured on 2026-10-25 (M2 Pro, headless Chromium 131): fake separator, first `filtered` 0.56 s after the click and the hold after the seek 0.21 s, 3 of 3 runs passed. DeepFilterNet3, first `filtered` 0.98 s (model load from 0.52 s, then the 2 s window), 10 s windows in 0.5 s, hold after the seek 1.0 s.
+
+The committed test also waits for the Python server before launching Chromium and checks that `currentTime` advances by more than 0.5 s in the second after the first `filtered`.
 
 **Step 6: Commit**
 
