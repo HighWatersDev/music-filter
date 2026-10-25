@@ -1,62 +1,90 @@
 (() => {
-  if (window.__musicFilterMseTap) return;
-  const MAX_STREAM_BYTES = 8 * 1024 * 1024;
-  const mimeBySourceBuffer = new WeakMap();
-  const state = { installed: [], audioMime: null, audioAppends: 0, audioBytes: 0, videoAppends: 0, chunks: [], streamBytes: 0 };
-  window.__musicFilterMseTap = state;
+  if (window.__musicFilterTap) return;
+  const CONNECT = 'music-filter:tap-connect';
+  const MAX_QUEUED_BYTES = 32 * 1024 * 1024;
 
-  const copyBytes = (data) => {
-    const view = ArrayBuffer.isView(data) ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength) : new Uint8Array(data);
-    return view.slice();
+  const ids = new WeakMap();
+  let nextId = 1;
+  const idOf = (object) => {
+    if (!ids.has(object)) ids.set(object, nextId++);
+    return ids.get(object);
   };
+  const audioStreamIds = new WeakMap();
+  const queue = [];
+  let queuedBytes = 0;
+  let droppedBytes = 0;
+  let port = null;
+  window.__musicFilterTap = { isConnected: () => Boolean(port), droppedBytes: () => droppedBytes };
 
-  function wrapMediaSource(MediaSourceClass, name) {
-    if (!MediaSourceClass?.prototype?.addSourceBuffer) return;
-    const original = MediaSourceClass.prototype.addSourceBuffer;
-    MediaSourceClass.prototype.addSourceBuffer = function (mime) {
-      const sourceBuffer = original.call(this, mime);
-      mimeBySourceBuffer.set(sourceBuffer, mime);
+  const copy = (data) =>
+    (ArrayBuffer.isView(data) ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength) : new Uint8Array(data)).slice()
+      .buffer;
+
+  function emit(event) {
+    const transfer = event.bytes ? [event.bytes] : [];
+    if (port) {
+      port.postMessage(event, transfer);
+      return;
+    }
+    if (event.bytes) {
+      if (queuedBytes + event.bytes.byteLength > MAX_QUEUED_BYTES) {
+        droppedBytes += event.bytes.byteLength;
+        return;
+      }
+      queuedBytes += event.bytes.byteLength;
+    }
+    queue.push(event);
+  }
+
+  function wrapMediaSource(MediaSourceClass) {
+    const proto = MediaSourceClass?.prototype;
+    if (!proto || !Object.prototype.hasOwnProperty.call(proto, 'addSourceBuffer')) return;
+    const addSourceBuffer = proto.addSourceBuffer;
+    proto.addSourceBuffer = function (mime) {
+      const sourceBuffer = addSourceBuffer.call(this, mime);
+      if (String(mime).startsWith('audio/')) {
+        const streamId = idOf(sourceBuffer);
+        const isManaged = typeof window.ManagedMediaSource === 'function' && this instanceof window.ManagedMediaSource;
+        audioStreamIds.set(sourceBuffer, streamId);
+        emit({ kind: 'source-buffer', streamId, mediaSourceId: idOf(this), mime: String(mime), isManaged });
+      }
       return sourceBuffer;
     };
-    state.installed.push(name);
   }
 
-  function wrapSourceBuffer(SourceBufferClass, name) {
-    if (!SourceBufferClass?.prototype?.appendBuffer) return;
-    const original = SourceBufferClass.prototype.appendBuffer;
-    SourceBufferClass.prototype.appendBuffer = function (data) {
-      const mime = mimeBySourceBuffer.get(this) ?? '';
-      if (mime.startsWith('audio/')) {
-        const bytes = copyBytes(data);
-        state.audioMime = mime;
-        state.audioAppends += 1;
-        state.audioBytes += bytes.byteLength;
-        if (state.streamBytes + bytes.byteLength <= MAX_STREAM_BYTES) {
-          state.chunks.push(bytes);
-          state.streamBytes += bytes.byteLength;
-        }
-      } else if (mime.startsWith('video/')) {
-        state.videoAppends += 1;
-      }
-      return original.call(this, data);
+  function wrapSourceBuffer(SourceBufferClass) {
+    const proto = SourceBufferClass?.prototype;
+    if (!proto || !Object.prototype.hasOwnProperty.call(proto, 'appendBuffer')) return;
+    const appendBuffer = proto.appendBuffer;
+    const abort = proto.abort;
+    proto.appendBuffer = function (data) {
+      const streamId = audioStreamIds.get(this);
+      if (streamId) emit({ kind: 'append', streamId, bytes: copy(data) });
+      return appendBuffer.call(this, data);
     };
-    state.installed.push(name);
+    proto.abort = function () {
+      const streamId = audioStreamIds.get(this);
+      if (streamId) emit({ kind: 'abort', streamId });
+      return abort.call(this);
+    };
   }
 
-  wrapMediaSource(window.MediaSource, 'MediaSource');
-  wrapMediaSource(window.ManagedMediaSource, 'ManagedMediaSource');
-  wrapSourceBuffer(window.SourceBuffer, 'SourceBuffer');
-  wrapSourceBuffer(window.ManagedSourceBuffer, 'ManagedSourceBuffer');
+  const createObjectURL = URL.createObjectURL;
+  URL.createObjectURL = function (object) {
+    const url = createObjectURL.call(URL, object);
+    if (object && typeof object.addSourceBuffer === 'function') emit({ kind: 'object-url', mediaSourceId: idOf(object), url });
+    return url;
+  };
+
+  wrapMediaSource(window.MediaSource);
+  wrapMediaSource(window.ManagedMediaSource);
+  wrapSourceBuffer(window.SourceBuffer);
+  wrapSourceBuffer(window.ManagedSourceBuffer);
 
   window.addEventListener('message', (event) => {
-    if (event.source !== window || event.data?.type !== 'mf-mse-tap-request') return;
-    const { installed, audioMime, audioAppends, audioBytes, videoAppends, chunks, streamBytes } = state;
-    const stream = new Uint8Array(streamBytes);
-    let offset = 0;
-    for (const chunk of chunks) {
-      stream.set(chunk, offset);
-      offset += chunk.byteLength;
-    }
-    window.postMessage({ type: 'mf-mse-tap-report', installed, audioMime, audioAppends, audioBytes, videoAppends, stream }, '*');
+    if (event.source !== window || event.data?.type !== CONNECT || port || !event.ports[0]) return;
+    port = event.ports[0];
+    for (const queued of queue.splice(0)) port.postMessage(queued, queued.bytes ? [queued.bytes] : []);
+    queuedBytes = 0;
   });
 })();
