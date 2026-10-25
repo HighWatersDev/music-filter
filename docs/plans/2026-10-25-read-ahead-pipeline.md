@@ -3042,6 +3042,12 @@ Headless YouTube stops itself after about 35 s (see `docs/spikes/2026-10-19-work
 
 **Step 3:** No commit unless a bug fix is needed. Put findings in Task 16's doc.
 
+**Backward-seek bug (found and fixed during this task):** A seek back past the worker's 10 s keep-behind, or to before the point where filtering began, left the planner with no decoded audio near the playhead. YouTube never re-appends bytes it still holds, and the content script sent its retained bytes only once on activation. The hold ran to its 30 s timeout and the video then played silent with an error. On the TED video, paused at 6.0 s and rewound from 20.3 s to 5.3 s, that is what happened. Big Buck Bunny rewound from 18.9 s to 0.5 s never resumed either.
+
+The fix has four parts. The engine reports a `starved` status once per playhead position when it has decoded audio but none at the playhead, or when planning reaches frames it dropped ahead of the playhead. The content script then replays the stream, sending `stream-reset` with the current playhead followed by the retained init and chunks, at most once per 5 s, and keeps the scheduler's windows. The engine still decodes every frame but only writes those within 30 s behind and 90 s ahead of the playhead, so a replay of many megabytes stays bounded. The keep-behind is now 30 s to match the scheduler. The hold resumes at 1.5 s ahead instead of 2 s, so the first 2 s window is enough.
+
+Re-test in headless Chrome after the fix. TED paused at 6.8 s and rewound from 21.0 s to 6.0 s resumed filtered after 0.34 s. TED rewound from 29.7 s to 14.7 s resumed after 0.57 s. TED rewound from 34.2 s to 2 s, which crosses the new 30 s keep-behind, replayed the stream and resumed after 0.53 s. Big Buck Bunny rewound from 27.9 s to 0.5 s resumed after 0.24 s. The first `filtered` came 1.1 to 1.3 s after turning the filter on, and the original level stayed at 0 in every run. The local e2e test now rewinds from 45 s to 5 s and resumes in about 0.2 s.
+
 ---
 
 ### Task 14: Safari on the iPhone simulator
