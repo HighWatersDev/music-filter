@@ -9,3 +9,4 @@ listening/
 build/
 test-page/fixtures/
 .playwright/
+tools/listen/*.wav
