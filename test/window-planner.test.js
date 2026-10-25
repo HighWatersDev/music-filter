@@ -101,7 +101,7 @@ test('the end of the decoded audio is not planned again when the overlap equals 
   assert.equal(plan, null);
 });
 
-const starving = { lookahead: 30 * S, maxStartGap: S / 2, cutAt: null };
+const starving = { lookahead: 30 * S, maxStartGap: S / 2 };
 
 test('starved when no decoded audio covers or starts just after the playhead', () => {
   assert.equal(isStarved({ ...starving, playhead: 5 * S, decoded: [[20 * S, 60 * S]], processed: [] }), true);
@@ -114,9 +114,6 @@ test('not starved while enough processed audio is ahead', () => {
   assert.equal(isStarved({ ...starving, playhead: 5 * S, decoded: [], processed: [[5 * S, 36 * S]] }), false);
 });
 
-test('starved when the decoded audio ahead ends where frames were dropped', () => {
-  const cut = { ...starving, playhead: 10 * S, processed: [[10 * S, 20 * S]] };
-  assert.equal(isStarved({ ...cut, decoded: [[0, 25 * S]], cutAt: 25 * S }), true);
-  assert.equal(isStarved({ ...cut, decoded: [[0, 25 * S]], cutAt: null }), false);
-  assert.equal(isStarved({ ...cut, decoded: [[0, 40 * S]], cutAt: 25 * S }), false);
+test('decoded audio that ends ahead of the playhead is not starvation', () => {
+  assert.equal(isStarved({ ...starving, playhead: 10 * S, processed: [[10 * S, 20 * S]], decoded: [[0, 25 * S]] }), false);
 });

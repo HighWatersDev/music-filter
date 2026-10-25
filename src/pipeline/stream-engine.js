@@ -23,6 +23,39 @@ function trimAfter(ranges, point) {
   return ranges.filter(([s]) => s < point).map(([s, e]) => [s, Math.min(e, point)]);
 }
 
+class PacketQueue {
+  constructor() {
+    this.items = [];
+    this.head = 0;
+    this.bytes = 0;
+  }
+
+  get length() {
+    return this.items.length - this.head;
+  }
+
+  push(entry) {
+    this.items.push(entry);
+    this.bytes += entry.frame?.data.byteLength ?? 0;
+  }
+
+  peek() {
+    return this.items[this.head];
+  }
+
+  shift() {
+    const entry = this.items[this.head];
+    this.items[this.head] = undefined;
+    this.head += 1;
+    this.bytes -= entry.frame?.data.byteLength ?? 0;
+    if (this.head >= 1024 && this.head * 2 >= this.items.length) {
+      this.items = this.items.slice(this.head);
+      this.head = 0;
+    }
+    return entry;
+  }
+}
+
 export function createSerialQueue() {
   let tail = Promise.resolve();
   return (task) => {
@@ -62,7 +95,8 @@ export class StreamEngine {
     });
     this.decoder?.free();
     this.decoder = null;
-    this.queuedFrames = [];
+    this.latestInit = null;
+    this.packets = new PacketQueue();
     this.timeline = new PcmTimeline({ channels: 2, pageSamples: this.config.sampleRate });
     this.processed = [];
     this.inFlight = null;
@@ -71,7 +105,6 @@ export class StreamEngine {
     this.isPlaying = false;
     this.ready = Promise.resolve();
     this.hasDecoded = false;
-    this.cutAt = null;
     this.starvedAt = null;
   }
 
@@ -88,8 +121,7 @@ export class StreamEngine {
   }
 
   setPlayhead(seconds, isPlaying) {
-    const { sampleRate: rate, keepBehindSeconds, keepAheadSeconds, lookaheadSeconds, windowSeconds } = this.config;
-    const previous = this.playhead;
+    const { sampleRate: rate, keepBehindSeconds, lookaheadSeconds, windowSeconds } = this.config;
     this.playhead = Math.max(0, Math.round(seconds * rate));
     this.isPlaying = isPlaying;
     const keepFrom = this.playhead - keepBehindSeconds * rate;
@@ -97,28 +129,45 @@ export class StreamEngine {
       this.timeline.evictBefore(keepFrom);
       this.processed = trimBefore(this.processed, keepFrom);
     }
-    if (this.playhead < previous) this.evictTimelineAfter(this.playhead + keepAheadSeconds * rate);
     this.processed = trimAfter(this.processed, this.playhead + (lookaheadSeconds + windowSeconds) * rate);
+    this.drainPackets();
     this.pump();
-  }
-
-  evictTimelineAfter(point) {
-    const { timeline } = this;
-    const firstDropped = Math.ceil(point / timeline.pageSamples);
-    const cut = firstDropped * timeline.pageSamples;
-    for (const index of [...timeline.pages.keys()]) if (index >= firstDropped) timeline.pages.delete(index);
-    if (timeline.ranges.some(([, e]) => e > cut)) this.markCut(cut);
-    timeline.ranges = trimAfter(timeline.ranges, cut);
-  }
-
-  markCut(sample) {
-    this.cutAt = Math.min(this.cutAt ?? Infinity, sample);
   }
 
   isIdle() {
     if (this.halted !== null) return true;
-    if (this.inFlight || this.queuedFrames.length > 0 || (this.decoder && !this.decoder.isReady)) return false;
+    if (this.inFlight || this.hasPendingDecode()) return false;
     return this.plan() === null;
+  }
+
+  decodeLimit() {
+    return this.playhead + this.config.keepAheadSeconds * this.config.sampleRate;
+  }
+
+  frameSample(frame) {
+    return Math.round(frame.timeSeconds * this.config.sampleRate);
+  }
+
+  hasPendingDecode() {
+    if (this.decoder && !this.decoder.isReady) return true;
+    const next = this.packets.peek();
+    if (!next) return false;
+    return Boolean(next.init) || this.frameSample(next.frame) < this.decodeLimit();
+  }
+
+  drainPackets() {
+    while (this.packets.length > 0 && this.halted === null) {
+      const { init, frame } = this.packets.peek();
+      if (init) {
+        if (this.decoder && !this.decoder.isReady) return;
+        this.packets.shift();
+        this.configureDecoder(init);
+        continue;
+      }
+      if (!this.decoder?.isReady || this.frameSample(frame) >= this.decodeLimit()) return;
+      this.packets.shift();
+      this.decodeFrame(frame);
+    }
   }
 
   handleInit(init) {
@@ -127,6 +176,12 @@ export class StreamEngine {
       this.onStatus({ stage: 'unsupported', reason: this.halted });
       return;
     }
+    this.latestInit = init;
+    this.packets.push({ init });
+    this.drainPackets();
+  }
+
+  configureDecoder(init) {
     const decoder = new FrameDecoder({ sampleRate: this.config.sampleRate });
     this.decoder?.free();
     this.decoder = decoder;
@@ -134,7 +189,7 @@ export class StreamEngine {
       .configure(init)
       .then(() => {
         if (this.decoder !== decoder) return;
-        for (const frame of this.queuedFrames.splice(0)) this.decodeFrame(frame);
+        this.drainPackets();
         this.pump();
       })
       .catch((error) => {
@@ -145,24 +200,17 @@ export class StreamEngine {
   }
 
   handleFrame(frame) {
-    if (this.halted || !this.decoder) return;
-    if (!this.decoder.isReady) {
-      this.queuedFrames.push(frame);
-      return;
-    }
-    this.decodeFrame(frame);
+    if (this.halted || !this.latestInit) return;
+    this.packets.push({ frame });
+    this.drainPackets();
   }
 
   decodeFrame(frame) {
     const span = this.decoder.decode(frame);
     if (!span) return;
     this.hasDecoded = true;
-    const { sampleRate: rate, keepBehindSeconds, keepAheadSeconds } = this.config;
+    const { sampleRate: rate, keepBehindSeconds } = this.config;
     const start = span.startSample;
-    if (start >= this.playhead + keepAheadSeconds * rate) {
-      this.markCut(start);
-      return;
-    }
     if (start + span.channelData[0].length <= this.playhead - keepBehindSeconds * rate) return;
     this.timeline.write(start, span.channelData);
   }
@@ -208,14 +256,13 @@ export class StreamEngine {
   }
 
   reportIfStarved() {
-    if (!this.hasDecoded || !this.decoder?.isReady || this.queuedFrames.length > 0) return;
+    if (!this.hasDecoded || this.hasPendingDecode()) return;
     const { sampleRate: rate, starvedRearmSeconds } = this.config;
     if (this.starvedAt !== null && Math.abs(this.playhead - this.starvedAt) <= starvedRearmSeconds * rate) return;
     const starved = isStarved({
       playhead: this.playhead,
       decoded: this.timeline.ranges,
       processed: this.processed,
-      cutAt: this.cutAt,
       lookahead: this.config.lookaheadSeconds * rate,
       maxStartGap: this.config.maxStartGapSeconds * rate,
     });

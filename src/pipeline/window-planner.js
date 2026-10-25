@@ -26,12 +26,10 @@ function processedRunEnd(processed, playhead, maxStartGap) {
   return start !== null && start - playhead <= maxStartGap ? contiguousEnd(processed, start) : playhead;
 }
 
-export function isStarved({ playhead, decoded, processed, cutAt, lookahead, maxStartGap }) {
+export function isStarved({ playhead, decoded, processed, lookahead, maxStartGap }) {
   if (processedRunEnd(processed, playhead, maxStartGap) - playhead >= lookahead) return false;
   const start = nextRangeStart(decoded, playhead);
-  if (start === null || start - playhead > maxStartGap) return true;
-  if (cutAt === null) return false;
-  return Math.abs(bridgedEnd(decoded, start, maxStartGap) - cutAt) <= maxStartGap;
+  return start === null || start - playhead > maxStartGap;
 }
 
 export function planNextWindow({
