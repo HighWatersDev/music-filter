@@ -77,17 +77,23 @@ export class PlaybackScheduler {
     if (plan.skip) return;
 
     const toContext = (media) => mediaToContext({ media, mediaNow, ctxNow, latency });
+    let previous = null;
+    if (plan.previous !== -1) {
+      const [previousWindow, previousPlaying] = playing[plan.previous];
+      const notBefore = crossfadeStart({ previousEnd: previousWindow.end, previousSettled: previousPlaying.settled, overlap: CROSSFADE_SECONDS });
+      span = scheduleSpan({ ...timing, notBefore });
+      if (!span) return;
+      previous = { end: previousWindow.end, envelope: previousPlaying.envelope };
+    }
+
     const source = new AudioBufferSourceNode(this.context, { buffer: window.buffer });
     const gain = new GainNode(this.context, { gain: 1 });
     const envelope = new GainEnvelope(gain.gain);
     source.connect(gain).connect(this.bus);
     let settled = span.startMedia;
 
-    if (plan.previous !== -1) {
-      const [previousWindow, previous] = playing[plan.previous];
-      const notBefore = crossfadeStart({ previousEnd: previousWindow.end, previousSettled: previous.settled, overlap: CROSSFADE_SECONDS });
-      span = scheduleSpan({ ...timing, notBefore });
-      const fade = crossfadeSpan({ previousEnd: previousWindow.end, nextStart: span.startMedia, mediaNow, latency });
+    if (previous) {
+      const fade = crossfadeSpan({ previousEnd: previous.end, nextStart: span.startMedia, mediaNow, latency });
       if (fade) {
         envelope.set(0, toContext(fade.from));
         envelope.ramp(1, toContext(fade.to));

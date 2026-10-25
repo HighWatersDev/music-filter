@@ -144,3 +144,19 @@ test('overlapping windows stay seamless and in sync with output latency', () => 
   const windows = [[0, 10], [3, 13], [11.5, 13.4], [12.2, 22]];
   assertSeamless(play(windows, { until: 22, latency: 0.12 }), { from: 0.3, to: 21.7, latency: 0.12 });
 });
+
+test('a crossfade start past the window end schedules nothing instead of throwing', () => {
+  sources.length = 0;
+  clock.now = 0;
+  const context = { currentTime: 0, outputLatency: 0, destination: {} };
+  const video = { currentTime: 0 };
+  const scheduler = new PlaybackScheduler(context, video);
+  scheduler.addWindow({ startSeconds: 0, sampleRate: RATE, left: new Float32Array(10 * RATE), right: new Float32Array(10 * RATE) });
+  scheduler.tick({ allowProcessed: true });
+  assert.equal(sources.length, 1);
+  const [previous] = scheduler.playing.values();
+  previous.settled = 20;
+  scheduler.addWindow({ startSeconds: 0.5, sampleRate: RATE, left: new Float32Array(11.5 * RATE), right: new Float32Array(11.5 * RATE) });
+  assert.doesNotThrow(() => scheduler.tick({ allowProcessed: true }));
+  assert.equal(sources.length, 1);
+});
