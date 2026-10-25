@@ -15,7 +15,18 @@ const LEAVES = new Set([
   ID.SIMPLE_BLOCK,
   ID.BLOCK,
 ]);
-const RESYNC_IDS = [ID.CLUSTER, ID.EBML];
+const KNOWN_UNUSED_IDS = new Set([
+  0xec, 0xbf,
+  0x4286, 0x42f7, 0x42f2, 0x42f3, 0x4282, 0x4287, 0x4285,
+  0x114d9b74, 0x1c53bb6b, 0x1254c367, 0x1043a770, 0x1941a469,
+  0x4489, 0x4d80, 0x5741, 0x73a4, 0x4461, 0x7ba9, 0x7384, 0x3cb923, 0x3eb923, 0x3c83ab, 0x3e83bb, 0x4444, 0x6924,
+  0x73c5, 0xb9, 0x88, 0x55aa, 0x9c, 0x6de7, 0x6df8, 0x23e383, 0x234e7a, 0x23314f, 0x55ee, 0x536e, 0x22b59c, 0x22b59d,
+  0x258688, 0xe0, 0x6d80, 0x41e4, 0xaa, 0x7446, 0x6fab, 0x6624, 0xe2, 0x55ab, 0x55ac, 0x55ad, 0x55ae, 0x55af,
+  0x78b5, 0x6264, 0x52f1,
+  0x5854, 0xa7, 0xab, 0xaf,
+  0xa2, 0x75a1, 0x9b, 0xfa, 0xfb, 0xfd, 0xa4, 0x75a2, 0x8e,
+]);
+const EBML_HEADER_CHILDREN = new Set([0x4286, 0x42f7, 0x42f2, 0x42f3, 0x4282, 0x4287, 0x4285]);
 const MAX_LEAF_BYTES = 16 * 1024 * 1024;
 const MAX_SKIP_BYTES = 256 * 1024 * 1024;
 const AUDIO_TRACK_TYPE = 2;
@@ -29,6 +40,8 @@ export class WebmDemuxer {
     this.buffer = new Uint8Array(0);
     this.offset = 0;
     this.skipRemaining = 0;
+    this.isResyncing = false;
+    this.pendingResyncReason = null;
     this.resetStream();
   }
 
@@ -56,6 +69,8 @@ export class WebmDemuxer {
     this.offset = 0;
     this.skipRemaining = 0;
     this.clusterTimecode = null;
+    this.isResyncing = true;
+    this.pendingResyncReason = 'data after abort did not start at a cluster or init segment';
   }
 
   parse() {
@@ -67,17 +82,18 @@ export class WebmDemuxer {
         this.skipRemaining -= skipped;
         if (this.skipRemaining > 0) return;
       }
+      if (this.isResyncing && !this.findSyncPoint()) return;
 
       const id = readVint(buffer, this.offset, { keepMarker: true });
       if (!id) return;
       if (id.error || id.length > MAX_ID_LENGTH) {
-        if (!this.resync('invalid element id')) return;
+        this.startResync('invalid element id');
         continue;
       }
       const size = readVint(buffer, this.offset + id.length);
       if (!size) return;
       if (size.error) {
-        if (!this.resync('invalid element size')) return;
+        this.startResync('invalid element size');
         continue;
       }
       const payloadStart = this.offset + id.length + size.length;
@@ -93,37 +109,70 @@ export class WebmDemuxer {
         this.enterMaster(id.value);
         continue;
       }
-      if (size.isUnknown || size.value > MAX_SKIP_BYTES) {
-        if (!this.resync(`element 0x${id.value.toString(16)} has an unusable size`)) return;
+      const isLeaf = LEAVES.has(id.value);
+      if (!isLeaf && !KNOWN_UNUSED_IDS.has(id.value)) {
+        this.startResync(`unknown element 0x${id.value.toString(16)}`);
         continue;
       }
-      if (LEAVES.has(id.value)) {
-        if (size.value > MAX_LEAF_BYTES) {
-          if (!this.resync(`element 0x${id.value.toString(16)} is too large`)) return;
-          continue;
-        }
-        const payloadEnd = payloadStart + size.value;
-        if (payloadEnd > buffer.length) return;
-        this.readLeaf(id.value, buffer.subarray(payloadStart, payloadEnd));
-        this.offset = payloadEnd;
+      if (size.isUnknown || size.value > (isLeaf ? MAX_LEAF_BYTES : MAX_SKIP_BYTES)) {
+        this.startResync(`element 0x${id.value.toString(16)} has an unusable size`);
         continue;
       }
-      this.offset = payloadStart;
-      this.skipRemaining = size.value;
+      if (!isLeaf) {
+        this.offset = payloadStart;
+        this.skipRemaining = size.value;
+        continue;
+      }
+      const payloadEnd = payloadStart + size.value;
+      if (payloadEnd > buffer.length) return;
+      this.offset = payloadEnd;
+      this.readLeaf(id.value, buffer.subarray(payloadStart, payloadEnd));
     }
   }
 
-  resync(reason) {
+  startResync(reason) {
     this.onWarning(`resync: ${reason}`);
+    this.offset += 1;
+    this.isResyncing = true;
+    this.pendingResyncReason = null;
+  }
+
+  findSyncPoint() {
     const { buffer } = this;
-    for (let i = this.offset + 1; i + MAX_ID_LENGTH <= buffer.length; i++) {
-      if (RESYNC_IDS.includes(readUint(buffer.subarray(i, i + MAX_ID_LENGTH)))) {
-        this.offset = i;
-        return true;
-      }
+    for (let i = this.offset; i + MAX_ID_LENGTH <= buffer.length; i++) {
+      const verdict = this.checkSyncPoint(i);
+      if (verdict === 'reject') continue;
+      if (i > this.offset) this.reportSkippedBytes();
+      this.offset = i;
+      if (verdict === 'wait') return false;
+      this.isResyncing = false;
+      this.pendingResyncReason = null;
+      return true;
     }
-    this.offset = Math.max(this.offset, buffer.length - (MAX_ID_LENGTH - 1));
+    const keepFrom = Math.max(this.offset, buffer.length - (MAX_ID_LENGTH - 1));
+    if (keepFrom > this.offset) this.reportSkippedBytes();
+    this.offset = keepFrom;
     return false;
+  }
+
+  reportSkippedBytes() {
+    if (!this.pendingResyncReason) return;
+    this.onWarning(`resync: ${this.pendingResyncReason}`);
+    this.pendingResyncReason = null;
+  }
+
+  checkSyncPoint(i) {
+    const { buffer } = this;
+    const id = readUint(buffer.subarray(i, i + MAX_ID_LENGTH));
+    if (id !== ID.CLUSTER && id !== ID.EBML) return 'reject';
+    const size = readVint(buffer, i + MAX_ID_LENGTH);
+    if (!size) return 'wait';
+    if (size.error) return 'reject';
+    const child = readVint(buffer, i + MAX_ID_LENGTH + size.length, { keepMarker: true });
+    if (!child) return 'wait';
+    if (child.error) return 'reject';
+    const isValid = id === ID.CLUSTER ? child.value === ID.TIMECODE : EBML_HEADER_CHILDREN.has(child.value);
+    return isValid ? 'accept' : 'reject';
   }
 
   enterMaster(id) {

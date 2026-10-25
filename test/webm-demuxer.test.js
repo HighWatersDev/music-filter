@@ -101,3 +101,76 @@ test('garbage before a cluster is skipped with a warning', () => {
   assert.ok(frames.length > before);
   assert.ok(warnings.some((w) => w.startsWith('resync')));
 });
+
+function resumeAfterAbort(injected) {
+  const bytes = fixture('tone-12s.webm');
+  const [, second] = clusterOffsets(bytes);
+  const { frames, demuxer, warnings } = demux([bytes.subarray(0, second)]);
+  const before = frames.length;
+  demuxer.abort();
+  demuxer.push(injected);
+  demuxer.push(bytes.subarray(second));
+  const reference = demux([bytes]).frames.slice(before);
+  return { resumed: frames.slice(before), reference, warnings };
+}
+
+test('a throwing frame callback does not wedge the demuxer', () => {
+  const bytes = fixture('tone-12s.webm');
+  const frames = [];
+  let firstTime = null;
+  const demuxer = new WebmDemuxer({
+    onInit: () => {},
+    onFrame: (frame) => {
+      firstTime ??= frame.timeSeconds;
+      if (frame.timeSeconds === firstTime) throw new Error('callback failed');
+      frames.push(frame);
+    },
+  });
+  assert.throws(() => demuxer.push(bytes), /callback failed/);
+  demuxer.push(new Uint8Array(0));
+  assert.equal(frames.length, 600);
+  assert.ok(frames.every((f) => f.timeSeconds !== firstTime));
+});
+
+test('random bytes before a cluster resync to that cluster', () => {
+  let state = 12345;
+  const random = new Uint8Array(4096).map(() => (state = (state * 1103515245 + 12345) & 0x7fffffff) >> 16);
+  const { resumed, reference, warnings } = resumeAfterAbort(random);
+  assert.equal(resumed.length, reference.length);
+  assert.equal(resumed[0].timeSeconds, reference[0].timeSeconds);
+  assert.ok(warnings.some((w) => w.startsWith('resync')));
+});
+
+test('a fake Cluster ID inside a frame payload does not cause a false resync', () => {
+  const fakeCluster = [0x1f, 0x43, 0xb6, 0x75, 0x88, 0x40, 0x01, 0x10, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+  const block = [0xa3, 0x80 | (4 + fakeCluster.length), 0x81, 0x00, 0x00, 0x80, ...fakeCluster];
+  const { resumed, reference } = resumeAfterAbort(Uint8Array.from([0x00, ...block]));
+  assert.equal(resumed.length, reference.length);
+  assert.equal(resumed[0].timeSeconds, reference[0].timeSeconds);
+});
+
+test('an unknown element between clusters resyncs instead of being skipped by its size', () => {
+  const bytes = fixture('tone-12s.webm');
+  const [, second] = clusterOffsets(bytes);
+  const unknown = Uint8Array.of(0x40, 0x01, 0x10, 0x10, 0x00, 0x00);
+  const spliced = new Uint8Array(bytes.length + unknown.length);
+  spliced.set(bytes.subarray(0, second));
+  spliced.set(unknown, second);
+  spliced.set(bytes.subarray(second), second + unknown.length);
+  const { frames, warnings } = demux([spliced]);
+  assert.equal(frames.length, 601);
+  assert.ok(warnings.some((w) => w.startsWith('resync')));
+});
+
+test('a Void element between clusters is skipped silently', () => {
+  const bytes = fixture('tone-12s.webm');
+  const [, second] = clusterOffsets(bytes);
+  const voidElement = Uint8Array.of(0xec, 0x83, 0x00, 0x00, 0x00);
+  const spliced = new Uint8Array(bytes.length + voidElement.length);
+  spliced.set(bytes.subarray(0, second));
+  spliced.set(voidElement, second);
+  spliced.set(bytes.subarray(second), second + voidElement.length);
+  const { frames, warnings } = demux([spliced]);
+  assert.equal(frames.length, 601);
+  assert.deepEqual(warnings, []);
+});
