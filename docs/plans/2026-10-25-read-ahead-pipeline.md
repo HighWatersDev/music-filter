@@ -3008,6 +3008,11 @@ Measured on 2026-10-25 (M2 Pro) on 30 s WebM Opus files made with ffmpeg:
 
 Run it on any WebM Opus speech-plus-music file to hear the stitching.
 
+The committed script also prints both sides' RMS on each `boundary` line, so a mismatch caused by one side being silent is visible. Results from the committed script on 2026-10-25 (M2 Pro):
+- `tone-60s.webm`: 8 windows (2 s, six of 10 s, 5 s), 10 s windows in 0.49 s. Every boundary reads 0.0 dB because the next window's first second is exactly zero (DeepFilterNet3 zero-masks the tone) against -72 dBFS on the earlier side. Inaudible either way.
+- 30 s `say` speech over a 220/277/330 Hz chord and pink noise, libopus 128k: 5 windows (2, 10, 10, 10, 2 s), 10 s windows in 1.06 to 1.09 s. Overlap mismatch -16.3, -1.4, -28.0 and -27.2 dB. No sample step within 10 ms of a window edge is above the file's 99.9th percentile step.
+- The -1.4 dB boundary at 10 s comes from a speech onset at 10.8 s after a 0.5 s zero-masked pause. The earlier window matches a continuous whole-file pass there, the next window is 7 dB louder. A longer warm-up on the window's own start (up to 2 s) does not change it. Warming up on the 1 to 3 s of audio before the window improves it to -9 dB. Every window differs from a continuous pass by -7 to -15 dB anyway, so DeepFilterNet3's output depends on its recurrent and normalization state for longer than the warm-up. Warming up on preceding audio is a possible follow-up, not a fix this plan makes.
+
 **Step 3: Commit**
 
 ```bash
