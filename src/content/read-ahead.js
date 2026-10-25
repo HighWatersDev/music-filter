@@ -1,15 +1,17 @@
-import { decideHold } from '../pipeline/hold-policy.js';
-import { createOriginalAudio } from './original-audio.js';
+import { canPlayProcessed, decideHold } from '../pipeline/hold-policy.js';
+import { findStreamForMedia, streamProblem } from '../pipeline/stream-match.js';
+import { createOriginalAudioRegistry } from './original-audio.js';
 import { createPanel } from './panel.js';
 import { PlaybackScheduler } from './playback-scheduler.js';
 import { connectSeparator } from './separator-client.js';
 
 const TAP_CONNECT = 'music-filter:tap-connect';
+const SOURCE_ATTRIBUTE = 'data-mf-media-source';
 const TICK_MS = 250;
 const RETAINED_BYTES = 16 * 1024 * 1024;
 const MAX_STREAMS = 4;
 const OUTPUT_SAMPLE_RATE = 48000;
-const TICK_EVENTS = ['play', 'playing', 'seeked', 'ratechange'];
+const TICK_EVENTS = ['play', 'playing', 'seeked', 'ratechange', 'waiting', 'pause', 'ended', 'emptied'];
 
 const isSafari = navigator.vendor === 'Apple Computer, Inc.';
 const isLocalTest = location.hostname === 'localhost' && localStorage.getItem('mf_fake_separator') === '1';
@@ -17,20 +19,24 @@ const MODEL = isLocalTest ? 'fake' : 'dfn3';
 
 const streams = new Map();
 const objectUrls = new Map();
+const originals = createOriginalAudioRegistry({ mode: isSafari ? 'mute' : 'graph', readPlayerVolume });
 let separator;
+let separatorFailure = null;
+let streamFailure = null;
 let activeStreamId = null;
 let isEnabled = false;
 let context;
 let scheduler;
 let original;
 let attachedVideo;
+let videoListeners;
 let detail = '';
-let failure = null;
 let heldSince = null;
+let tappedPlayerVolume = null;
 
 const panel = createPanel({ onToggle: (on) => setEnabled(on).catch((error) => fail(error.message)) });
 connectTap();
-setInterval(tick, TICK_MS);
+setInterval(safeTick, TICK_MS);
 
 function connectTap() {
   const channel = new MessageChannel();
@@ -43,8 +49,16 @@ function handleTapEvent(event) {
     objectUrls.set(event.mediaSourceId, event.url);
     return;
   }
+  if (event.kind === 'player-volume') {
+    tappedPlayerVolume = { muted: event.muted, volume: event.volume };
+    return;
+  }
+  if (event.kind === 'media-element-source') {
+    safeTick();
+    return;
+  }
   if (event.kind === 'source-buffer') {
-    streams.set(event.streamId, { ...event, init: null, chunks: [], retainedBytes: 0 });
+    streams.set(event.streamId, { ...event, init: null, chunks: [], retainedBytes: 0, timestampOffset: 0 });
     for (const id of streams.keys()) {
       if (streams.size <= MAX_STREAMS) break;
       if (id !== activeStreamId) streams.delete(id);
@@ -53,11 +67,18 @@ function handleTapEvent(event) {
   }
   const stream = streams.get(event.streamId);
   if (!stream) return;
+  const isActive = event.streamId === activeStreamId;
   if (event.kind === 'append') {
     retain(stream, event.bytes);
-    if (event.streamId === activeStreamId) sendChunk(event.streamId, event.bytes);
+    if (isActive && !currentFailure()) sendChunk(event.streamId, event.bytes);
   }
-  if (event.kind === 'abort' && event.streamId === activeStreamId) send({ type: 'stream-abort', streamId: event.streamId });
+  if (event.kind === 'abort' && isActive) send({ type: 'stream-abort', streamId: event.streamId });
+  if (event.kind === 'timestamp-offset' || event.kind === 'change-type') {
+    if (event.kind === 'timestamp-offset') stream.timestampOffset = event.value;
+    else stream.mime = event.mime;
+    const problem = streamProblem(stream);
+    if (isActive && problem) fail(problem);
+  }
 }
 
 function retain(stream, bytes) {
@@ -65,9 +86,19 @@ function retain(stream, bytes) {
     stream.init = bytes;
     return;
   }
+  if (!isEnabled && stream !== currentStream()) return;
   stream.chunks.push(bytes);
   stream.retainedBytes += bytes.byteLength;
   while (stream.retainedBytes > RETAINED_BYTES) stream.retainedBytes -= stream.chunks.shift().byteLength;
+}
+
+function trimInactiveStreams() {
+  const keep = currentStream();
+  for (const stream of streams.values()) {
+    if (stream === keep) continue;
+    stream.chunks = [];
+    stream.retainedBytes = 0;
+  }
 }
 
 function sendChunk(streamId, bytes) {
@@ -76,23 +107,37 @@ function sendChunk(streamId, bytes) {
 }
 
 function ensureSeparator() {
-  separator ??= connectSeparator({ onMessage: handleWorkerMessage }).catch((error) => {
-    separator = undefined;
-    throw error;
-  });
+  if (separatorFailure) return null;
+  if (!separator) {
+    const pending = connectSeparator({ onMessage: handleWorkerMessage });
+    pending.catch((error) => failSeparator(error.message, pending));
+    separator = pending;
+  }
   return separator;
 }
 
+function failSeparator(message, pending) {
+  if (pending !== separator) return;
+  separator = undefined;
+  pending.then(({ frame }) => frame.remove(), () => {});
+  separatorFailure = `separator: ${message}`;
+  stopForFailure();
+}
+
 function send(message, transfer = []) {
-  ensureSeparator().then(
-    ({ port }) => port.postMessage(message, transfer),
-    (error) => fail(`separator: ${error.message}`),
+  const pending = ensureSeparator();
+  if (!pending) return;
+  pending.then(
+    ({ port }) => {
+      if (pending === separator) port.postMessage(message, transfer);
+    },
+    () => {},
   );
 }
 
 function handleWorkerMessage(message) {
   if (message.type === 'error') {
-    fail(`separator: ${message.message}`);
+    failSeparator(message.message, separator);
     return;
   }
   if (message.streamId !== activeStreamId) return;
@@ -106,11 +151,20 @@ function handleWorkerMessage(message) {
   if (message.stage === 'window') detail = `window ${message.durationSeconds.toFixed(0)} s in ${(message.computeMs / 1000).toFixed(1)} s`;
 }
 
+function currentFailure() {
+  return separatorFailure ?? original?.error ?? streamFailure;
+}
+
 function fail(message) {
-  failure = message;
+  streamFailure ??= message;
+  stopForFailure();
+}
+
+function stopForFailure() {
   scheduler?.stopAll();
   releaseHold();
-  panel.update({ state: 'error', detail: message, originalLevel: original?.currentLevel() ?? 1 });
+  if (isEnabled) original?.setLevel(0);
+  panel.update({ state: 'error', detail: currentFailure(), originalLevel: original?.currentLevel() ?? 1 });
 }
 
 function releaseHold() {
@@ -126,41 +180,79 @@ function applyHold(action) {
   attachedVideo.pause();
 }
 
+function readPlayerVolume() {
+  try {
+    const player = document.querySelector('#movie_player');
+    const muted = player?.isMuted?.();
+    const volume = player?.getVolume?.();
+    if (typeof muted === 'boolean' && Number.isFinite(volume)) return { muted, volume: volume / 100 };
+  } catch {}
+  return tappedPlayerVolume;
+}
+
 function pickVideo() {
   return document.querySelector('#movie_player video.html5-main-video') ?? document.querySelector('video');
 }
 
 function selectStream(video) {
-  const src = video.currentSrc || video.src;
-  let match = null;
-  for (const stream of streams.values()) if (objectUrls.get(stream.mediaSourceId) === src) match = stream;
-  return match;
+  return findStreamForMedia({
+    streams: streams.values(),
+    objectUrls,
+    taggedMediaSourceId: video.getAttribute(SOURCE_ATTRIBUTE),
+    src: video.src || video.currentSrc,
+  });
+}
+
+function currentStream() {
+  const video = pickVideo();
+  return video ? selectStream(video) : null;
 }
 
 function activate(stream) {
   activeStreamId = stream.streamId;
-  failure = null;
-  scheduler?.reset();
+  streamFailure = null;
+  detail = '';
+  scheduler.reset();
+  const problem = streamProblem(stream);
+  if (problem) {
+    fail(problem);
+    return;
+  }
   send({ type: 'stream-reset', streamId: stream.streamId, mime: stream.mime, model: MODEL });
   if (stream.init) sendChunk(stream.streamId, stream.init);
   for (const chunk of stream.chunks) sendChunk(stream.streamId, chunk);
 }
 
+function deactivate() {
+  activeStreamId = null;
+  streamFailure = null;
+  detail = '';
+  scheduler.reset();
+}
+
 function attach(video) {
-  original?.dispose();
+  videoListeners?.abort();
+  scheduler?.dispose();
   context ??= new AudioContext({ sampleRate: OUTPUT_SAMPLE_RATE, latencyHint: 'playback' });
-  original = createOriginalAudio(video, context, { mode: isSafari ? 'mute' : 'graph' });
-  scheduler?.reset();
+  original = originals.attach(video, context, { level: 0 });
   scheduler = new PlaybackScheduler(context, video);
   attachedVideo = video;
   activeStreamId = null;
+  streamFailure = null;
   heldSince = null;
-  video.addEventListener('seeking', () => {
-    scheduler?.stopAll();
-    tick();
-  });
-  for (const type of TICK_EVENTS) video.addEventListener(type, () => tick());
-  video.addEventListener('play', () => context.resume());
+  videoListeners = new AbortController();
+  const { signal } = videoListeners;
+  video.addEventListener(
+    'seeking',
+    () => {
+      scheduler.stopAll();
+      safeTick();
+    },
+    { signal },
+  );
+  for (const type of TICK_EVENTS) video.addEventListener(type, safeTick, { signal });
+  video.addEventListener('play', () => context.resume().catch(() => {}), { signal });
+  if (original.error) stopForFailure();
 }
 
 async function setEnabled(on) {
@@ -168,21 +260,29 @@ async function setEnabled(on) {
   if (!on) {
     releaseHold();
     scheduler?.stopAll();
-    original?.setLevel(1);
+    activeStreamId = null;
+    originals.restoreAll();
+    trimInactiveStreams();
     panel.update({ state: 'off', detail: '', originalLevel: 1 });
     return;
   }
   const video = pickVideo();
   if (!video) throw new Error('no video on this page');
-  if (video !== attachedVideo) attach(video);
-  original.setLevel(0);
-  failure = null;
-  activeStreamId = null;
-  panel.update({ state: 'waiting', detail: '', originalLevel: 0 });
+  separatorFailure = null;
+  attach(video);
+  panel.update({ state: 'waiting', detail: '', originalLevel: original.currentLevel() });
   await context.resume();
   if ('audioSession' in navigator) navigator.audioSession.type = 'playback';
-  ensureSeparator().catch(() => {});
-  tick();
+  ensureSeparator();
+  safeTick();
+}
+
+function safeTick() {
+  try {
+    tick();
+  } catch (error) {
+    fail(`internal error: ${error.message}`);
+  }
 }
 
 function tick() {
@@ -191,15 +291,16 @@ function tick() {
   if (!video) return;
   if (video !== attachedVideo) attach(video);
   const stream = selectStream(video);
+  if (!stream && activeStreamId !== null) deactivate();
   if (stream && stream.streamId !== activeStreamId) activate(stream);
-  if (activeStreamId !== null) {
+  if (activeStreamId !== null && !currentFailure()) {
     send({ type: 'playhead', streamId: activeStreamId, seconds: video.currentTime, isPlaying: !video.paused });
   }
   if (context.state !== 'running') context.resume().catch(() => {});
 
   const isAudioRunning = context.state === 'running';
   const decision = decideHold({
-    failure,
+    failure: currentFailure(),
     hasStream: activeStreamId !== null,
     playbackRate: video.playbackRate,
     isPaused: video.paused,
@@ -214,11 +315,20 @@ function tick() {
   else applyHold(decision.action);
 
   original.setLevel(0);
-  const isFiltered = !failure && decision.state === 'filtered';
-  scheduler.tick({ allowProcessed: isFiltered && !video.paused && !video.seeking && isAudioRunning });
-  scheduler.setVolume(isFiltered ? original.userVolume() : 0);
+  const failure = currentFailure();
+  const state = failure ? 'error' : decision.state;
+  scheduler.tick({
+    allowProcessed: canPlayProcessed({
+      state,
+      isPaused: video.paused,
+      isSeeking: video.seeking,
+      isAudioRunning,
+      readyState: video.readyState,
+    }),
+  });
+  scheduler.setVolume(state === 'filtered' ? original.userVolume() : 0);
   panel.update({
-    state: failure ? 'error' : decision.state,
+    state,
     detail: failure ?? detail,
     originalLevel: original.currentLevel(),
     aheadSeconds: scheduler.secondsAhead(),

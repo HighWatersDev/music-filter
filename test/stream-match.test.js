@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { findStreamForMedia } from '../src/pipeline/stream-match.js';
+import { findStreamForMedia, streamProblem } from '../src/pipeline/stream-match.js';
 
 const streams = [
   { streamId: 1, mediaSourceId: 10 },
@@ -26,4 +26,17 @@ test('findStreamForMedia returns null for an unknown source', () => {
   assert.equal(findStreamForMedia({ streams, objectUrls, src: 'blob:c' }), null);
   assert.equal(findStreamForMedia({ streams, objectUrls, src: '' }), null);
   assert.equal(findStreamForMedia({ streams, objectUrls, taggedMediaSourceId: '99', src: 'blob:a' }), null);
+});
+
+test('streamProblem accepts Opus in WebM and rejects other types', () => {
+  assert.equal(streamProblem({ mime: 'audio/webm; codecs="opus"', timestampOffset: 0 }), null);
+  assert.equal(streamProblem({ mime: 'audio/webm;codecs=opus' }), null);
+  assert.equal(streamProblem({ mime: 'audio/webm' }), null);
+  assert.equal(streamProblem({ mime: 'audio/mp4; codecs="mp4a.40.2"' }), 'unsupported audio type audio/mp4; codecs="mp4a.40.2"');
+  assert.equal(streamProblem({ mime: 'audio/webm; codecs="vorbis"' }), 'unsupported audio type audio/webm; codecs="vorbis"');
+});
+
+test('streamProblem rejects a nonzero timestamp offset', () => {
+  assert.equal(streamProblem({ mime: 'audio/webm; codecs="opus"', timestampOffset: 12.5 }), 'timestamp offset');
+  assert.equal(streamProblem({ mime: 'audio/webm; codecs="opus"', timestampOffset: -0 }), null);
 });
