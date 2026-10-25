@@ -199,6 +199,7 @@
     lines.push(await describeAudioDecoder());
     if (!report.stream?.byteLength) return [...lines, 'MSE decode: no audio segments captured yet'];
     const joined = report.stream;
+    const streamKb = (joined.byteLength / 1024).toFixed(0);
     const context = new AudioContext();
     try {
       const decoded = await context.decodeAudioData(joined.buffer);
@@ -206,9 +207,9 @@
       for (let c = 0; c < decoded.numberOfChannels; c++) {
         for (const sample of decoded.getChannelData(c)) peak = Math.max(peak, Math.abs(sample));
       }
-      lines.push(`MSE decode (${(joined.byteLength / 1024).toFixed(0)} KB stream): OK ${decoded.duration.toFixed(2)} s ${decoded.numberOfChannels} ch ${decoded.sampleRate} Hz peak=${peak.toFixed(4)}`);
+      lines.push(`MSE decode (${streamKb} KB stream): OK ${decoded.duration.toFixed(2)} s ${decoded.numberOfChannels} ch ${decoded.sampleRate} Hz peak=${peak.toFixed(4)}`);
     } catch (error) {
-      lines.push(`MSE decode (${(joined.byteLength / 1024).toFixed(0)} KB stream): FAILED ${error?.name ?? ''} ${error?.message ?? error}`);
+      lines.push(`MSE decode (${streamKb} KB stream): FAILED ${error?.name ?? ''} ${error?.message ?? error}`);
     } finally {
       await context.close();
     }

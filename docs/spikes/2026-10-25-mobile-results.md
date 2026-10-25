@@ -1,4 +1,33 @@
-# Mobile spike: iPhone Safari
+# Mobile spike: iPhone Safari and Firefox for Android
+
+## Summary
+
+| | iPhone Safari (simulator) | Firefox for Android (emulator) |
+|---|---|---|
+| Extension runs on m.youtube.com | Yes | Yes |
+| YouTube streams with | ManagedMediaSource | MediaSource |
+| Tap the video's audio (`createMediaElementSource`) | **Silence** | **Works** (peak 0.72) |
+| Copy audio chunks from the player | Works (Opus/WebM) | Works (Opus/WebM, 331 chunks, 1.36 MB) |
+| Decode copied chunks (`decodeAudioData`) | Works (50 s) | Works (10 s, see note) |
+| WebCodecs `AudioDecoder` | Yes, Opus supported | Missing |
+| WebGPU | Yes | No |
+| WASM SIMD / AudioWorklet | Yes / Yes | Yes / Yes |
+| Live speech-only filter possible | **No** | **Yes** |
+| Read-ahead keep-effects pipeline possible | Yes | Yes, CPU only |
+
+Firefox note: `decodeAudioData` returned only the first 10 s of a 1.36 MB stream, probably because it stops at a second init segment or a discontinuity. A production pipeline needs its own WebM demuxer on Firefox, since it has no WebCodecs to fall back on.
+
+## Firefox for Android details
+
+Date: 2026-10-25
+Device: Android 17 emulator (API 37, arm64), Firefox 158.0.2 from archive.mozilla.org (signed by Mozilla Release Engineering).
+Build: `scripts/build-firefox.sh` copies `extension/` to `build/firefox` and adds `browser_specific_settings.gecko`. Loaded as a temporary add-on with `web-ext run -t firefox-android` (web-ext 10.7.0), after enabling "Remote debugging via USB" in Firefox settings.
+
+- The MAIN-world chunk tap installed on the first page load. No timing miss seen in one run.
+- MV3 host permission was granted at install for the temporary add-on. A store install would show the permission prompt.
+- Screenshot: `2026-10-25-android-firefox-diagnose.png`.
+
+## iPhone Safari details
 
 Date: 2026-10-25
 Device: iPhone 17 simulator, iOS 27.0, Safari 27 (Xcode 27.1). Not yet confirmed on a real iPhone.
@@ -35,4 +64,5 @@ Screenshots: `2026-10-25-iphone-silence.png` (element tap silent) and `2026-10-2
 
 1. Repeat on a real iPhone, with a free Apple developer account and the Xcode project in `build/safari`.
 2. Measure MRX on a real iPhone (WASM and WebGPU) on 30 s of decoded audio.
-3. Same checks on the iPad simulator (desktop-class site, likely `MediaSource`) and on Firefox for Android.
+3. Same checks on the iPad simulator (desktop-class site, likely `MediaSource`).
+4. Measure MRX speed on a mid-range Android phone in Firefox, CPU only.
