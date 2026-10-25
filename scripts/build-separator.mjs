@@ -26,6 +26,16 @@ await build({
   logLevel: 'info',
 });
 
+await build({
+  entryPoints: { 'read-ahead': 'src/content/read-ahead.js' },
+  bundle: true,
+  format: 'iife',
+  platform: 'browser',
+  target: 'chrome120',
+  outdir: OUT_DIR,
+  logLevel: 'info',
+});
+
 const require = createRequire(import.meta.url);
 mkdirSync(join(OUT_DIR, 'ort'), { recursive: true });
 for (const file of ORT_FILES) {
