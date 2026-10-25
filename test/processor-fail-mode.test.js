@@ -139,3 +139,85 @@ test('ready reports the fail mode and the 1920-sample delay', () => {
   assert.equal(ready.failMode, 'silence');
   assert.equal(ready.latencySamples, 1920);
 });
+
+function send(processor, message) {
+  processor.port.onmessage({ data: message });
+}
+
+test('silence mode ignores bypass, so the input can never reach the output', () => {
+  const processor = createProcessor({ df: fakeDf(), failMode: 'silence' });
+  render(processor, 30);
+  send(processor, { type: 'bypass', value: true });
+  assertNeverInput(render(processor, 30));
+});
+
+test('passthrough mode still honours bypass', () => {
+  const processor = createProcessor({ df: fakeDf() });
+  render(processor, 30);
+  send(processor, { type: 'bypass', value: true });
+  const samples = render(processor, 30);
+  assert.ok(samples.slice(-BLOCK).every((sample) => Math.abs(sample - INPUT_LEVEL) < 1e-6));
+});
+
+function countingDf() {
+  const df = fakeDf();
+  const process = df.df_process_frame;
+  df.frames = 0;
+  df.df_process_frame = (handle, frame) => {
+    df.frames += 1;
+    return process(handle, frame);
+  };
+  return df;
+}
+
+test('while idle the processor outputs zeros without running the model', () => {
+  const df = countingDf();
+  const processor = createProcessor({ df, failMode: 'silence' });
+  render(processor, 10);
+  send(processor, { type: 'idle', value: true });
+  const before = df.frames;
+  const samples = render(processor, 40);
+  assert.equal(df.frames, before);
+  assert.ok(samples.every((sample) => sample === 0));
+});
+
+test('leaving idle resumes the model with no audio left over from before', () => {
+  const df = countingDf();
+  const processor = createProcessor({ df, failMode: 'silence' });
+  render(processor, 30);
+  send(processor, { type: 'idle', value: true });
+  render(processor, 10);
+  send(processor, { type: 'idle', value: false });
+  const samples = render(processor, 30);
+  assert.ok(df.frames > 0);
+  const firstProcessed = samples.findIndex((sample) => sample !== 0);
+  assert.ok(firstProcessed >= 3 * 2 * BLOCK, `processed audio after ${firstProcessed} samples`);
+  assert.ok(samples.slice(-BLOCK).every((sample) => sample === PROCESSED_LEVEL));
+});
+
+test('dispose frees the model when the build exports df_free and ends the processor', () => {
+  const df = countingDf();
+  const freed = [];
+  df.df_free = (handle) => freed.push(handle);
+  const processor = createProcessor({ df, failMode: 'silence' });
+  render(processor, 10);
+  send(processor, { type: 'dispose' });
+  const before = df.frames;
+  const output = [new Float32Array(BLOCK).fill(1), new Float32Array(BLOCK).fill(1)];
+  const input = [new Float32Array(BLOCK).fill(INPUT_LEVEL), new Float32Array(BLOCK).fill(INPUT_LEVEL)];
+  assert.equal(processor.process([input], [output]), false);
+  assert.ok(output.every((channel) => channel.every((sample) => sample === 0)));
+  assert.equal(df.frames, before);
+  assert.deepEqual(freed, [1]);
+});
+
+test('dispose without df_free still stops processing and ends the processor', () => {
+  const df = countingDf();
+  const processor = createProcessor({ df, failMode: 'silence' });
+  render(processor, 10);
+  send(processor, { type: 'dispose' });
+  const before = df.frames;
+  const input = [new Float32Array(BLOCK), new Float32Array(BLOCK)];
+  assert.equal(processor.process([input], [[new Float32Array(BLOCK), new Float32Array(BLOCK)]]), false);
+  assert.equal(df.frames, before);
+});

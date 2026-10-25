@@ -21,15 +21,15 @@ export function defineMusicFilterProcessor({ Base, df, sampleRate, clock }) {
     constructor(options) {
       super();
       this.isBypassed = false;
+      this.isIdle = false;
+      this.isDisposed = false;
       this.hasFailed = false;
       this.hasRenderFailed = false;
       this.failMode = 'silence';
       this.mono = null;
       this.renderDry = null;
       this.reportedStages = new Set();
-      this.port.onmessage = ({ data }) => {
-        if (data?.type === 'bypass') this.isBypassed = Boolean(data.value);
-      };
+      this.port.onmessage = ({ data }) => this.handleMessage(data);
 
       try {
         const { wasm, modelBytes, attenLimDb, failMode = 'passthrough' } = options.processorOptions;
@@ -43,11 +43,11 @@ export function defineMusicFilterProcessor({ Base, df, sampleRate, clock }) {
           budgetMs: (frameLength / sampleRate) * 1000,
           quantumMs: (RENDER_QUANTUM / sampleRate) * 1000,
         });
-        this.dryDelay = new DelayLine(modelDelay);
+        this.frameLength = frameLength;
+        this.modelDelay = modelDelay;
         this.dryFrame = new Float32Array(frameLength);
         this.silentFrame = new Float32Array(frameLength);
-        this.adapter = new FrameAdapter(frameLength, (frame) => this.processFrame(frame));
-        this.renderDelay = new DelayLine(this.adapter.latencySamples + modelDelay);
+        this.resetBuffers();
         this.port.postMessage({
           type: 'ready',
           frameLength,
@@ -60,6 +60,37 @@ export function defineMusicFilterProcessor({ Base, df, sampleRate, clock }) {
         this.adapter = null;
         this.reportError('init', error);
       }
+    }
+
+    resetBuffers() {
+      this.dryDelay = new DelayLine(this.modelDelay);
+      this.adapter = new FrameAdapter(this.frameLength, (frame) => this.processFrame(frame));
+      this.renderDelay = new DelayLine(this.adapter.latencySamples + this.modelDelay);
+    }
+
+    handleMessage(data) {
+      if (data?.type === 'bypass' && !this.isSilentOnFailure) this.isBypassed = Boolean(data.value);
+      if (data?.type === 'idle') this.setIdle(Boolean(data.value));
+      if (data?.type === 'dispose') this.dispose();
+    }
+
+    setIdle(isIdle) {
+      if (isIdle === this.isIdle) return;
+      this.isIdle = isIdle;
+      if (!isIdle && this.adapter) this.resetBuffers();
+    }
+
+    dispose() {
+      if (this.isDisposed) return;
+      this.isDisposed = true;
+      this.adapter = null;
+      if (this.handle === undefined || typeof df.df_free !== 'function') return;
+      try {
+        df.df_free(this.handle);
+      } catch (error) {
+        this.reportError('dispose', error);
+      }
+      this.handle = undefined;
     }
 
     get isSilentOnFailure() {
@@ -134,7 +165,15 @@ export function defineMusicFilterProcessor({ Base, df, sampleRate, clock }) {
     process(inputs, outputs) {
       const input = inputs[0] ?? [];
       const output = outputs[0];
+      if (this.isDisposed) {
+        for (const channel of output ?? []) channel.fill(0);
+        return false;
+      }
       if (!output?.length) return true;
+      if (this.isIdle) {
+        this.writeFallback(output, null);
+        return true;
+      }
 
       if (!this.adapter) {
         if (this.isSilentOnFailure) this.writeFallback(output, null);
