@@ -16,6 +16,7 @@
   "dependencies": {
     "@audio/neural-runtime": "0.2.0",
     "@audio/neural-separate": "0.7.0",
-    "onnxruntime-web": "1.30.0"
+    "onnxruntime-web": "1.30.0",
+    "opus-decoder": "0.7.12"
   }
 }
