@@ -8,10 +8,12 @@
     "build:wasm": "bash scripts/build-wasm.sh",
     "build:worklet": "esbuild src/worklet/processor.js --bundle --format=esm --outfile=extension/dist/processor.js",
     "build:separator": "node scripts/build-separator.mjs",
-    "bench": "node bench/node-bench.mjs"
+    "bench": "node bench/node-bench.mjs",
+    "test:e2e": "npm run build && node test/e2e/read-ahead.e2e.mjs"
   },
   "devDependencies": {
-    "esbuild": "0.25.0"
+    "esbuild": "0.25.0",
+    "playwright": "1.49.1"
   },
   "dependencies": {
     "@audio/neural-runtime": "0.2.0",

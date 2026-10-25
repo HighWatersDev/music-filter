@@ -8,3 +8,4 @@ tools/listen/node_modules/
 listening/
 build/
 test-page/fixtures/
+.playwright/

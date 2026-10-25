@@ -1,0 +1,36 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>music-filter MSE test</title>
+<body style="margin:0;padding-top:140px;background:#111">
+<video id="player" controls playsinline style="width:100%;max-width:640px"></video>
+<script type="module">
+  const file = new URLSearchParams(location.search).get('file') ?? 'fixtures/tone-60s.webm';
+  const video = document.getElementById('player');
+  const mediaSource = new MediaSource();
+  video.src = URL.createObjectURL(mediaSource);
+  mediaSource.addEventListener(
+    'sourceopen',
+    async () => {
+      const sourceBuffer = mediaSource.addSourceBuffer('audio/webm; codecs="opus"');
+      const bytes = new Uint8Array(await (await fetch(file)).arrayBuffer());
+      let seed = 42;
+      const random = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+      let offset = 0;
+      const appendNext = () => {
+        if (offset >= bytes.length) {
+          mediaSource.endOfStream();
+          document.body.dataset.appended = 'all';
+          return;
+        }
+        const size = 2000 + Math.floor(random() * 30000);
+        sourceBuffer.appendBuffer(bytes.subarray(offset, offset + size));
+        offset += size;
+      };
+      sourceBuffer.addEventListener('updateend', () => setTimeout(appendNext, 20));
+      appendNext();
+    },
+    { once: true },
+  );
+</script>
+</body>
