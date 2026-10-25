@@ -298,9 +298,16 @@ export function createLiveFilter({ createContext, createFilterNode, onChange }) 
     context.resume?.().then(sync, () => {});
   }
 
+  function enforce() {
+    if (!isEnabled) return;
+    registry?.enforceAll();
+    fallbackMutes.enforceAll();
+  }
+
   return {
     setEnabled,
     attach,
+    enforce,
     fail,
     failClosed,
     refresh: sync,
@@ -436,6 +443,7 @@ export function startLiveFilter() {
     if (!filter.isEnabled) return;
     try {
       filter.attach(pickVideo(), allVideos());
+      filter.enforce();
       const { context } = filter;
       if (context && context.state !== 'running') context.resume().catch(() => {});
       filter.refresh();

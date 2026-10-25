@@ -517,3 +517,16 @@ test('other node construction errors are not retried', () => {
   );
   assert.equal(calls, 1);
 });
+
+test('the tick re-mutes a fallback-muted video that an ad unmuted', () => {
+  const { filter } = setup({
+    createContext: () => {
+      throw new Error('AudioContext blocked');
+    },
+  });
+  const video = new FakeVideo();
+  filter.setEnabled(true, video, [video]);
+  video.muted = false;
+  filter.enforce();
+  assert.equal(video.muted, true);
+});

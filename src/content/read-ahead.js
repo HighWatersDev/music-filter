@@ -339,6 +339,8 @@ function safeTick() {
 
 function tick() {
   if (!isEnabled) return;
+  originals.enforceAll();
+  fallbackMutes.enforceAll();
   const video = pickVideo();
   if (!video) return;
   if (video !== attachedVideo) attach(video);

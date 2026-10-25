@@ -299,3 +299,77 @@ test('onRoute is not called when routing fails', () => {
   assert.equal(control.source, null);
   assert.match(control.error, /could not be routed/);
 });
+
+function swapSourceUnmuted(video, eventType) {
+  video.muted = false;
+  video.volume = 0.7;
+  video.dispatchEvent(new Event(eventType));
+}
+
+for (const eventType of ['emptied', 'loadstart', 'loadedmetadata', 'play', 'playing']) {
+  test(`mute mode re-mutes an element unmuted without a volumechange, on ${eventType}`, () => {
+    const video = new FakeVideo();
+    const registry = createOriginalAudioRegistry({ mode: 'mute' });
+    registry.attach(video, null, { level: 0 });
+    swapSourceUnmuted(video, eventType);
+    assert.equal(video.muted, true);
+    assert.equal(video.volume, 0);
+  });
+}
+
+test('the tick re-mutes an element that an ad unmuted with no event at all', () => {
+  const video = new FakeVideo();
+  const registry = createOriginalAudioRegistry({ mode: 'mute' });
+  registry.attach(video, null, { level: 0 });
+  video.muted = false;
+  registry.enforceAll();
+  assert.equal(video.muted, true);
+});
+
+test('enforcing the mute does not overwrite the user settings restored later', () => {
+  const video = new FakeVideo();
+  video.volume = 0.4;
+  const registry = createOriginalAudioRegistry({ mode: 'mute' });
+  registry.attach(video, null, { level: 0 });
+  swapSourceUnmuted(video, 'emptied');
+  registry.enforceAll();
+  registry.restoreAll();
+  assert.equal(video.muted, false);
+  assert.equal(video.volume, 0.4);
+});
+
+test('enforcement leaves a restored element alone', () => {
+  const video = new FakeVideo();
+  const registry = createOriginalAudioRegistry({ mode: 'mute' });
+  registry.attach(video, null, { level: 0 });
+  registry.restoreAll();
+  video.muted = true;
+  video.dispatchEvent(new Event('emptied'));
+  registry.enforceAll();
+  video.muted = false;
+  video.dispatchEvent(new Event('playing'));
+  assert.equal(video.muted, false);
+});
+
+test('the tick routes a graph element whose metadata event was missed, at 0', () => {
+  const context = fakeContext();
+  const video = new FakeVideo();
+  video.readyState = 0;
+  const registry = createOriginalAudioRegistry({ mode: 'graph' });
+  registry.attach(video, context, { level: 0 });
+  assert.equal(context.gains.length, 0);
+  video.readyState = 1;
+  registry.enforceAll();
+  assert.equal(context.gains.length, 1);
+  assert.equal(context.gains[0].gain.value, 0);
+});
+
+test('the tick puts a graph gain back to 0 if it drifted while the filter is on', () => {
+  const context = fakeContext();
+  const video = new FakeVideo();
+  const registry = createOriginalAudioRegistry({ mode: 'graph' });
+  registry.attach(video, context, { level: 0 });
+  context.gains[0].gain.value = 1;
+  registry.enforceAll();
+  assert.equal(context.gains[0].gain.value, 0);
+});

@@ -24,6 +24,9 @@ export function createOriginalAudioRegistry({ mode, readPlayerVolume = () => nul
       for (const control of attached) control.setLevel(1);
       attached.clear();
     },
+    enforceAll() {
+      for (const control of attached) control.enforce();
+    },
   };
 }
 
@@ -66,6 +69,10 @@ function createDeferredGraphControl(video, context, { level: initialLevel, readP
     currentLevel: () => routed?.currentLevel() ?? level,
     userVolume: () => routed?.userVolume() ?? (video.muted ? 0 : video.volume),
     isRouted: () => routed !== null,
+    enforce() {
+      routeIfReady();
+      routed?.enforce();
+    },
   };
   video.addEventListener('loadedmetadata', route);
   routeIfReady();
@@ -106,6 +113,12 @@ function createGraphControl(video, context, { source, gain, level: initialLevel 
     },
     currentLevel: () => level,
     userVolume: () => (video.muted ? 0 : video.volume),
+    enforce() {
+      if (level !== 0 || gain.gain.value === 0) return;
+      const now = context.currentTime;
+      gain.gain.cancelScheduledValues(now);
+      gain.gain.setValueAtTime(0, now);
+    },
   };
 }
 
@@ -116,6 +129,12 @@ function createMuteControl(video, { level: initialLevel, readPlayerVolume, error
     video.muted = true;
     video.volume = 0;
   };
+  // YouTube ads swap the source and can leave the element unmuted with no volumechange, so the mute is
+  // re-asserted on source and playback events (and by enforce on every tick) without touching remembered.
+  const enforce = () => {
+    if (level === 0 && (!video.muted || video.volume > 0)) silence();
+  };
+  for (const type of ['emptied', 'loadstart', 'loadedmetadata', 'play', 'playing']) video.addEventListener(type, enforce);
   video.addEventListener('volumechange', () => {
     if (level !== 0) {
       remembered.muted = video.muted;
@@ -144,6 +163,7 @@ function createMuteControl(video, { level: initialLevel, readPlayerVolume, error
     },
     currentLevel: () => level,
     userVolume: () => resolveUserVolume({ player: readPlayerVolume(), remembered }),
+    enforce,
   };
   control.setLevel(initialLevel);
   return control;
