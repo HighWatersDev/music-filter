@@ -27,6 +27,7 @@
   let playback;
   let cancelProcessing;
   let activeTest;
+  let runningModel;
   let nextJobId = 1;
   const jobs = new Map();
 
@@ -94,8 +95,15 @@
 
   function render() {
     const isBusy = state === 'recording' || state === 'processing';
-    ui.buttons.mrx.disabled = isBusy;
-    ui.buttons.tiger.disabled = isBusy;
+    if (!isBusy) runningModel = undefined;
+    for (const key of Object.keys(MODELS)) {
+      const isRunning = key === runningModel;
+      ui.buttons[key].disabled = isBusy;
+      ui.buttons[key].style.fontWeight = isRunning ? 'bold' : 'normal';
+      ui.buttons[key].textContent = isRunning
+        ? `● ${MODELS[key].label}: ${state}…`
+        : `Test ${CLIP_SECONDS} s: ${MODELS[key].label}`;
+    }
     ui.buttons.original.disabled = !result;
     ui.buttons.removed.disabled = !result;
     ui.buttons.replay.disabled = !result || isBusy;
@@ -104,7 +112,9 @@
       ui.buttons[key].style.fontWeight = key === mode ? 'bold' : 'normal';
       ui.buttons[key].textContent = key === mode ? `[${label}]` : label;
     }
-    for (const button of Object.values(ui.buttons)) button.style.opacity = button.disabled ? '0.5' : '1';
+    for (const [key, button] of Object.entries(ui.buttons)) {
+      button.style.opacity = button.disabled && key !== runningModel ? '0.5' : '1';
+    }
     ui.panel.dataset.state = state;
     ui.panel.dataset.mode = mode;
     if (graph) {
@@ -518,6 +528,7 @@
     if (video.playbackRate !== 1) throw new Error(`playback speed is ${video.playbackRate}x. Set it to Normal (1x) and try again.`);
 
     playback?.stop();
+    runningModel = modelKey;
     ui.line('error');
     ui.line('result');
     await ensureGraph(video);
