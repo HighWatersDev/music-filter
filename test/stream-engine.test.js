@@ -297,3 +297,71 @@ test('engines sharing a queue never run separate concurrently', async () => {
   assert.equal(releases.length, 1);
   releases.shift()();
 });
+
+test('a continuing window gets up to 2 s of the decoded audio before it as context, the first window none', async () => {
+  const S = 48000;
+  const calls = [];
+  const capture = async (left, right, rate, options) => {
+    calls.push({ left, options });
+    return [left, right];
+  };
+  const { engine } = startEngine({ separate: capture, config: { windowSeconds: 4 } });
+  engine.pushChunk(bytes);
+  engine.setPlayhead(0, true);
+  await settle(engine);
+  const contextLengths = calls.map(({ options }) => options.contextBefore[0].length);
+  assert.deepEqual(contextLengths.slice(0, 4), [0, 1 * S, 2 * S, 2 * S]);
+  const [first, second, third] = calls;
+  assert.equal(third.options.contextBefore[1].length, 2 * S);
+  assertSame(second.options.contextBefore[0], first.left.subarray(0, 1 * S));
+  assertSame(third.options.contextBefore[0], second.left.subarray(1 * S, 3 * S));
+});
+
+function assertSame(actual, expected) {
+  assert.equal(actual.length, expected.length);
+  assert.equal(actual.findIndex((sample, i) => sample !== expected[i]), -1);
+}
+
+test('context bridges a tiny hole with silence and stops at a larger one', async () => {
+  const S = 48000;
+  const ones = (length) => [new Float32Array(length).fill(1), new Float32Array(length).fill(1)];
+  const contextFor = async (holeStart, holeLength) => {
+    const contexts = [];
+    const capture = async (left, right, rate, options) => {
+      contexts.push(options.contextBefore);
+      return [left, right];
+    };
+    const { engine } = startEngine({ separate: capture });
+    engine.timeline.write(0, ones(holeStart));
+    engine.timeline.write(holeStart + holeLength, ones(60 * S - holeStart - holeLength));
+    engine.processed = [[0, 5 * S]];
+    engine.setPlayhead(1, true);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    return contexts[0];
+  };
+
+  const [bridgedLeft, bridgedRight] = await contextFor(3 * S, 360);
+  assert.equal(bridgedLeft.length, 2 * S);
+  assert.equal(bridgedRight.length, 2 * S);
+  assert.ok(bridgedLeft.subarray(1 * S, 1 * S + 360).every((sample) => sample === 0));
+  assert.ok(bridgedLeft.subarray(0, 1 * S).every((sample) => sample === 1));
+  assert.ok(bridgedLeft.subarray(1 * S + 360).every((sample) => sample === 1));
+
+  const [cutLeft] = await contextFor(2.5 * S, 1 * S);
+  assert.equal(cutLeft.length, 0.5 * S);
+  assert.ok(cutLeft.every((sample) => sample === 1));
+});
+
+test('warmUpBeforeSeconds of 0 passes no context', async () => {
+  const contexts = [];
+  const capture = async (left, right, rate, options) => {
+    contexts.push(options.contextBefore[0].length);
+    return [left, right];
+  };
+  const { engine } = startEngine({ separate: capture, config: { windowSeconds: 4, warmUpBeforeSeconds: 0 } });
+  engine.pushChunk(bytes);
+  engine.setPlayhead(0, true);
+  await settle(engine);
+  assert.ok(contexts.length >= 3);
+  assert.ok(contexts.every((length) => length === 0));
+});

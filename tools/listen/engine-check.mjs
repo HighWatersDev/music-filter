@@ -15,7 +15,7 @@ const [input = '../../test-page/fixtures/tone-60s.webm', output = 'engine-check.
 const bytes = new Uint8Array(readFileSync(input));
 const windows = [];
 const engine = new StreamEngine({
-  separate: async (left, right) => voiceFilter(left, right),
+  separate: async (left, right, sampleRate, options) => voiceFilter(left, right, options),
   onWindow: (w) => windows.push(w),
   onStatus: (s) => s.stage === 'window' && console.log(JSON.stringify(s)),
   config: { lookaheadSeconds: 3600, urgencySeconds: 3600 },

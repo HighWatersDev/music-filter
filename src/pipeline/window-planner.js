@@ -10,6 +10,17 @@ export function bridgedEnd(ranges, point, maxGap) {
   return end;
 }
 
+export function bridgedStart(ranges, point, maxGap) {
+  let start = point;
+  for (let i = ranges.length - 1; i >= 0; i--) {
+    const [s, e] = ranges[i];
+    if (s >= start) continue;
+    if (start - e > maxGap) break;
+    start = s;
+  }
+  return start;
+}
+
 export function planNextWindow({
   playhead,
   decoded,

@@ -2,7 +2,7 @@ import { FrameDecoder } from './frame-decoder.js';
 import { PcmTimeline } from './pcm-timeline.js';
 import { addRange, contiguousEnd, trimBefore } from './ranges.js';
 import { WebmDemuxer } from './webm-demuxer.js';
-import { planNextWindow } from './window-planner.js';
+import { bridgedStart, planNextWindow } from './window-planner.js';
 
 export const DEFAULT_CONFIG = {
   sampleRate: 48000,
@@ -15,6 +15,7 @@ export const DEFAULT_CONFIG = {
   maxStartGapSeconds: 0.5,
   keepBehindSeconds: 10,
   keepAheadSeconds: 90,
+  warmUpBeforeSeconds: 2,
 };
 
 function trimAfter(ranges, point) {
@@ -177,11 +178,20 @@ export class StreamEngine {
     return out;
   }
 
+  readContextBefore({ start }) {
+    const { sampleRate: rate, warmUpBeforeSeconds, maxStartGapSeconds } = this.config;
+    const earliest = Math.max(0, start - Math.round(warmUpBeforeSeconds * rate));
+    const from = Math.max(earliest, bridgedStart(this.timeline.ranges, start, maxStartGapSeconds * rate));
+    if (from >= start) return [new Float32Array(0), new Float32Array(0)];
+    return this.readWindow({ start: from, end: start });
+  }
+
   pump() {
     if (this.inFlight || this.halted) return;
     const window = this.plan();
     if (!window) return;
     const pcm = this.readWindow(window);
+    const contextBefore = this.readContextBefore(window);
 
     const { generation } = this;
     const rate = this.config.sampleRate;
@@ -189,7 +199,7 @@ export class StreamEngine {
     this.inFlight = window;
     this.enqueue(() => {
       startedAt = Date.now();
-      return this.separate(pcm[0], pcm[1], rate);
+      return this.separate(pcm[0], pcm[1], rate, { contextBefore });
     })
       .then(([left, right]) => {
         if (generation !== this.generation) return;

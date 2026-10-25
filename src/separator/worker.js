@@ -189,7 +189,7 @@ function createWindowFilter(model, streamId) {
   if (model !== 'dfn3') throw new Error(`unknown model ${model}`);
   const report = (status) => post({ type: 'stream-status', streamId, ...status });
   loadVoiceFilter(report).catch(() => {});
-  return async (left, right) => (await loadVoiceFilter(report))(left, right);
+  return async (left, right, sampleRate, options) => (await loadVoiceFilter(report))(left, right, options);
 }
 
 function handleStream(data) {

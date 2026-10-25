@@ -97,3 +97,60 @@ test(
     assert.ok(dropDb > 20, `RMS dropped ${dropDb.toFixed(1)} dB`);
   },
 );
+
+function movingAverageFilter() {
+  let average = 0;
+  const inputs = [];
+  const processFrame = (frame) => {
+    inputs.push(frame.slice());
+    return frame.map((sample) => (average = 0.9999 * average + 0.0001 * sample));
+  };
+  return { processFrame, inputs };
+}
+
+function concat(a, b) {
+  const out = new Float32Array(a.length + b.length);
+  out.set(a);
+  out.set(b, a.length);
+  return out;
+}
+
+test('context before the window primes the state exactly like one continuous pass', () => {
+  const context = [noise(5000 + 37, 8), noise(5000 + 37, 9)];
+  const left = noise(9600 + 11, 10);
+  const right = noise(9600 + 11, 11);
+
+  const primed = movingAverageFilter();
+  const [voice, copy] = createVoiceFilter({ processFrame: primed.processFrame, frameLength: FRAME })(left, right, {
+    contextBefore: context,
+  });
+
+  const continuous = movingAverageFilter();
+  const [whole] = createVoiceFilter({ processFrame: continuous.processFrame, frameLength: FRAME, warmUpSamples: 0 })(
+    concat(context[0], left),
+    concat(context[1], right),
+  );
+
+  assertSameSamples(voice, whole.subarray(context[0].length));
+  assertSameSamples(copy, voice);
+  assertSameSamples(primed.inputs[0], downmix(...context).subarray(0, FRAME));
+  assert.equal(primed.inputs.length, Math.ceil((context[0].length + left.length + DFN_DELAY_SAMPLES) / FRAME));
+
+  const cold = movingAverageFilter();
+  const [unprimed] = createVoiceFilter({ processFrame: cold.processFrame, frameLength: FRAME })(left, right);
+  assert.ok(unprimed.some((sample, i) => sample !== voice[i]));
+});
+
+test('an empty context falls back to the warm-up on the start of the window', () => {
+  const warmUpSamples = 4800;
+  const left = noise(9600, 12);
+  const right = noise(9600, 13);
+  const mono = downmix(left, right);
+  for (const options of [undefined, {}, { contextBefore: [new Float32Array(0), new Float32Array(0)] }]) {
+    const { processFrame, inputs } = movingAverageFilter();
+    createVoiceFilter({ processFrame, frameLength: FRAME, warmUpSamples })(left, right, options);
+    assert.equal(inputs.length, warmUpSamples / FRAME + Math.ceil((9600 + DFN_DELAY_SAMPLES) / FRAME));
+    assertSameSamples(inputs[0], mono.subarray(0, FRAME));
+    assertSameSamples(inputs[warmUpSamples / FRAME], mono.subarray(0, FRAME));
+  }
+});
