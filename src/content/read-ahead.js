@@ -110,7 +110,7 @@ function sendChunk(streamId, bytes) {
 function ensureSeparator() {
   if (separatorFailure) return null;
   if (!separator) {
-    const pending = connectSeparator({ onMessage: handleWorkerMessage });
+    const pending = connectSeparator({ onMessage: (message) => handleWorkerMessage(message, pending) });
     pending.catch((error) => failSeparator(error.message, pending));
     separator = pending;
   }
@@ -118,7 +118,7 @@ function ensureSeparator() {
 }
 
 function failSeparator(message, pending) {
-  if (pending !== separator) return;
+  if (!pending || pending !== separator) return;
   separator = undefined;
   pending.then(({ frame }) => frame.remove(), () => {});
   separatorFailure = `separator: ${message}`;
@@ -136,9 +136,10 @@ function send(message, transfer = []) {
   );
 }
 
-function handleWorkerMessage(message) {
+function handleWorkerMessage(message, connection) {
+  if (connection !== separator) return;
   if (message.type === 'error') {
-    failSeparator(message.message, separator);
+    failSeparator(message.message, connection);
     return;
   }
   if (message.streamId !== activeStreamId) return;
@@ -170,7 +171,8 @@ function failClosed(message) {
 function stopForFailure() {
   scheduler?.stopAll();
   releaseHold();
-  if (isEnabled) original?.setLevel(0);
+  if (!isEnabled) return;
+  original?.setLevel(0);
   panel.update({ state: 'error', detail: currentFailure(), originalLevel: original?.currentLevel() ?? 1 });
 }
 
