@@ -2,7 +2,7 @@ import { contiguousEnd, nextRangeStart } from './ranges.js';
 
 export const HOLD_CONFIG = {
   playMarginSeconds: 0.3,
-  resumeAheadSeconds: 2,
+  resumeAheadSeconds: 1.5,
   startGapSeconds: 0.5,
   endSlackSeconds: 0.5,
   holdTimeoutSeconds: 30,

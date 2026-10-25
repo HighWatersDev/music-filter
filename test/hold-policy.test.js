@@ -29,10 +29,10 @@ test('playing without filtered audio at the playhead pauses', () => {
   assert.deepEqual(decideHold({ ...playing, processed: [[40, 40.4]] }), { action: 'none', state: 'filtered' });
 });
 
-test('a held video resumes once 2 s are ready, or the rest of the video', () => {
+test('a held video resumes once 1.5 s are ready, or the rest of the video', () => {
   const held = { ...playing, isPaused: true, isHeld: true };
-  assert.deepEqual(decideHold({ ...held, processed: [[40, 41.9]] }), { action: 'none', state: 'filtering' });
-  assert.deepEqual(decideHold({ ...held, processed: [[40, 42]] }), { action: 'resume', state: 'filtered' });
+  assert.deepEqual(decideHold({ ...held, processed: [[40, 41.4]] }), { action: 'none', state: 'filtering' });
+  assert.deepEqual(decideHold({ ...held, processed: [[40, 41.5]] }), { action: 'resume', state: 'filtered' });
   assert.deepEqual(decideHold({ ...held, now: 58.8, processed: [[50, 59.98]] }), { action: 'resume', state: 'filtered' });
 });
 
