@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { decideHold, readyAheadSeconds } from '../src/pipeline/hold-policy.js';
+import { canPlayProcessed, decideHold, readyAheadSeconds } from '../src/pipeline/hold-policy.js';
 
 const playing = {
   failure: null,
@@ -65,9 +65,33 @@ test('a failure or a hold that lasts too long releases the video', () => {
 });
 
 test('no stream or a stopped audio context is never treated as ready', () => {
-  assert.deepEqual(decideHold({ ...playing, hasStream: false }), { action: 'none', state: 'waiting' });
+  assert.deepEqual(decideHold({ ...playing, hasStream: false }), { action: 'pause', state: 'waiting' });
   assert.deepEqual(decideHold({ ...playing, isAudioRunning: false, processed: [[40, 50]] }), {
     action: 'pause',
     state: 'filtering',
   });
+});
+
+test('playing with no stream holds like buffering and gives up with an error', () => {
+  const noStream = { ...playing, hasStream: false };
+  assert.deepEqual(decideHold({ ...noStream, isPaused: true }), { action: 'none', state: 'waiting' });
+  assert.deepEqual(decideHold({ ...noStream, isPaused: true, isHeld: true, heldSeconds: 9 }), { action: 'none', state: 'waiting' });
+  assert.deepEqual(decideHold({ ...noStream, isHeld: true, heldSeconds: 3 }), { action: 'pause', state: 'waiting' });
+  assert.deepEqual(decideHold({ ...noStream, isPaused: true, isHeld: true, heldSeconds: 10 }), {
+    action: 'resume',
+    state: 'error',
+    failure: 'no audio stream found',
+  });
+});
+
+test('canPlayProcessed needs a filtered, playing, buffered video and running audio', () => {
+  const ready = { state: 'filtered', isPaused: false, isSeeking: false, isAudioRunning: true, readyState: 4 };
+  assert.equal(canPlayProcessed(ready), true);
+  assert.equal(canPlayProcessed({ ...ready, readyState: 3 }), true);
+  assert.equal(canPlayProcessed({ ...ready, readyState: 2 }), false);
+  assert.equal(canPlayProcessed({ ...ready, state: 'filtering' }), false);
+  assert.equal(canPlayProcessed({ ...ready, state: 'error' }), false);
+  assert.equal(canPlayProcessed({ ...ready, isPaused: true }), false);
+  assert.equal(canPlayProcessed({ ...ready, isSeeking: true }), false);
+  assert.equal(canPlayProcessed({ ...ready, isAudioRunning: false }), false);
 });
