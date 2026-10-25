@@ -173,3 +173,15 @@ test('resolveUserVolume falls back to remembered values when the player report i
   assert.equal(resolveUserVolume({ player: { muted: false, volume: 1.5 }, remembered }), 1);
   assert.equal(resolveUserVolume({ player: null, remembered: { muted: true, volume: 0.6 } }), 0);
 });
+
+test('a fallback mute restored before the primary control leaves the user settings', () => {
+  const primary = createOriginalAudioRegistry({ mode: 'mute' });
+  const fallback = createOriginalAudioRegistry({ mode: 'mute' });
+  const video = new FakeVideo();
+  primary.attach(video, null, { level: 0 });
+  fallback.attach(video, null, { level: 0 });
+  fallback.restoreAll();
+  primary.restoreAll();
+  assert.equal(video.muted, false);
+  assert.equal(video.volume, 0.7);
+});

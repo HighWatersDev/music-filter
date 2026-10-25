@@ -20,6 +20,7 @@ const MODEL = isLocalTest ? 'fake' : 'dfn3';
 const streams = new Map();
 const objectUrls = new Map();
 const originals = createOriginalAudioRegistry({ mode: isSafari ? 'mute' : 'graph', readPlayerVolume });
+const fallbackMutes = createOriginalAudioRegistry({ mode: 'mute' });
 let separator;
 let separatorFailure = null;
 let streamFailure = null;
@@ -34,7 +35,7 @@ let detail = '';
 let heldSince = null;
 let tappedPlayerVolume = null;
 
-const panel = createPanel({ onToggle: (on) => setEnabled(on).catch((error) => fail(error.message)) });
+const panel = createPanel({ onToggle: (on) => setEnabled(on).catch((error) => failClosed(error.message)) });
 connectTap();
 setInterval(safeTick, TICK_MS);
 
@@ -160,6 +161,12 @@ function fail(message) {
   stopForFailure();
 }
 
+function failClosed(message) {
+  const video = pickVideo();
+  if (isEnabled && video) fallbackMutes.attach(video, null, { level: 0 });
+  fail(message);
+}
+
 function stopForFailure() {
   scheduler?.stopAll();
   releaseHold();
@@ -261,6 +268,7 @@ async function setEnabled(on) {
     releaseHold();
     scheduler?.stopAll();
     activeStreamId = null;
+    fallbackMutes.restoreAll();
     originals.restoreAll();
     trimInactiveStreams();
     panel.update({ state: 'off', detail: '', originalLevel: 1 });
@@ -281,7 +289,7 @@ function safeTick() {
   try {
     tick();
   } catch (error) {
-    fail(`internal error: ${error.message}`);
+    failClosed(`internal error: ${error.message}`);
   }
 }
 
