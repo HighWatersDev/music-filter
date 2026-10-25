@@ -1,0 +1,161 @@
+import { FrameDecoder } from './frame-decoder.js';
+import { PcmTimeline } from './pcm-timeline.js';
+import { addRange, contiguousEnd, trimBefore } from './ranges.js';
+import { WebmDemuxer } from './webm-demuxer.js';
+import { planNextWindow } from './window-planner.js';
+
+export const DEFAULT_CONFIG = {
+  sampleRate: 48000,
+  firstWindowSeconds: 2,
+  windowSeconds: 10,
+  overlapSeconds: 1,
+  minWindowSeconds: 1,
+  lookaheadSeconds: 30,
+  urgencySeconds: 5,
+  maxStartGapSeconds: 0.5,
+  keepBehindSeconds: 10,
+};
+
+export class StreamEngine {
+  constructor({ separate, onWindow, onStatus = () => {}, onWarning = () => {}, config = {} }) {
+    this.separate = separate;
+    this.onWindow = onWindow;
+    this.onStatus = onStatus;
+    this.onWarning = onWarning;
+    this.config = { ...DEFAULT_CONFIG, ...config };
+    this.generation = 0;
+    this.reset();
+  }
+
+  reset() {
+    this.generation += 1;
+    this.demuxer = new WebmDemuxer({
+      onInit: (init) => this.handleInit(init),
+      onFrame: (frame) => this.handleFrame(frame),
+      onWarning: (message) => this.onWarning(message),
+    });
+    this.decoder?.free();
+    this.decoder = null;
+    this.queuedFrames = [];
+    this.timeline = new PcmTimeline({ channels: 2, pageSamples: this.config.sampleRate });
+    this.processed = [];
+    this.inFlight = null;
+    this.halted = null;
+    this.playhead = 0;
+    this.isPlaying = false;
+    this.ready = Promise.resolve();
+  }
+
+  pushChunk(bytes) {
+    this.demuxer.push(bytes);
+  }
+
+  abort() {
+    this.demuxer.abort();
+  }
+
+  setPlayhead(seconds, isPlaying) {
+    this.playhead = Math.max(0, Math.round(seconds * this.config.sampleRate));
+    this.isPlaying = isPlaying;
+    const keepFrom = this.playhead - this.config.keepBehindSeconds * this.config.sampleRate;
+    if (keepFrom > 0) {
+      this.timeline.evictBefore(keepFrom);
+      this.processed = trimBefore(this.processed, keepFrom);
+    }
+    this.pump();
+  }
+
+  isIdle() {
+    return this.halted !== null || this.plan() === null;
+  }
+
+  handleInit(init) {
+    if (init.codecId !== 'A_OPUS') {
+      this.halted = `codec ${init.codecId} is not supported`;
+      this.onStatus({ stage: 'unsupported', reason: this.halted });
+      return;
+    }
+    const decoder = new FrameDecoder({ sampleRate: this.config.sampleRate });
+    this.decoder?.free();
+    this.decoder = decoder;
+    this.ready = decoder
+      .configure(init)
+      .then(() => {
+        if (this.decoder !== decoder) return;
+        for (const frame of this.queuedFrames.splice(0)) this.decodeFrame(frame);
+        this.pump();
+      })
+      .catch((error) => {
+        if (this.decoder !== decoder) return;
+        this.halted = error.message;
+        this.onStatus({ stage: 'error', message: error.message });
+      });
+  }
+
+  handleFrame(frame) {
+    if (this.halted || !this.decoder) return;
+    if (!this.decoder.isReady) {
+      this.queuedFrames.push(frame);
+      return;
+    }
+    this.decodeFrame(frame);
+    this.pump();
+  }
+
+  decodeFrame(frame) {
+    const span = this.decoder.decode(frame);
+    if (span) this.timeline.write(span.startSample, span.channelData);
+  }
+
+  plan() {
+    const { sampleRate: rate, ...c } = this.config;
+    return planNextWindow({
+      playhead: this.playhead,
+      decoded: this.timeline.ranges,
+      processed: this.processed,
+      firstWindow: c.firstWindowSeconds * rate,
+      window: c.windowSeconds * rate,
+      overlap: c.overlapSeconds * rate,
+      minWindow: c.minWindowSeconds * rate,
+      lookahead: c.lookaheadSeconds * rate,
+      urgency: c.urgencySeconds * rate,
+      maxStartGap: c.maxStartGapSeconds * rate,
+    });
+  }
+
+  pump() {
+    if (this.inFlight || this.halted) return;
+    const window = this.plan();
+    if (!window) return;
+    const pcm = this.timeline.read(window.start, window.end - window.start);
+    if (!pcm) return;
+
+    const { generation } = this;
+    const rate = this.config.sampleRate;
+    const startedAt = Date.now();
+    this.inFlight = window;
+    this.separate(pcm[0], pcm[1], rate)
+      .then(([left, right]) => {
+        if (generation !== this.generation) return;
+        this.processed = addRange(this.processed, window.start, window.end);
+        this.onWindow({ startSeconds: window.start / rate, sampleRate: rate, left, right });
+        this.onStatus({
+          stage: 'window',
+          startSeconds: window.start / rate,
+          durationSeconds: (window.end - window.start) / rate,
+          computeMs: Date.now() - startedAt,
+          aheadSeconds: (contiguousEnd(this.processed, this.playhead) - this.playhead) / rate,
+        });
+      })
+      .catch((error) => {
+        if (generation !== this.generation) return;
+        this.halted = error.message;
+        this.onStatus({ stage: 'error', message: error.message });
+      })
+      .finally(() => {
+        if (generation !== this.generation) return;
+        this.inFlight = null;
+        this.pump();
+      });
+  }
+}
