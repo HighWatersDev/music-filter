@@ -1,7 +1,7 @@
 import separate, { models, REVISIONS } from '@audio/neural-separate';
 import { backends, fetchModel, load } from '@audio/neural-runtime';
 import { initSync, df_create, df_get_frame_length, df_process_frame } from '../../vendor/df/df.js';
-import { StreamEngine } from '../pipeline/stream-engine.js';
+import { createSerialQueue, StreamEngine } from '../pipeline/stream-engine.js';
 import { createVoiceFilter } from '../pipeline/voice-filter.js';
 
 const CACHE_NAME = 'audio-neural';
@@ -159,6 +159,7 @@ const DFN_MODEL_URL = new URL('../assets/DeepFilterNet3_onnx.tar.gz', import.met
 const DFN_ATTEN_LIM_DB = 100;
 let stream = null;
 let voiceFilter;
+const enqueueSeparation = createSerialQueue();
 
 async function fetchBytes(url) {
   const response = await fetch(url);
@@ -199,6 +200,7 @@ function handleStream(data) {
       id: streamId,
       engine: new StreamEngine({
         separate: createWindowFilter(model, streamId),
+        enqueue: enqueueSeparation,
         onWindow: (window) => {
           const transfer = [...new Set([window.left.buffer, window.right.buffer])];
           post({ type: 'window', streamId, ...window }, transfer);

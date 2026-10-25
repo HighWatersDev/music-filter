@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { StreamEngine } from '../src/pipeline/stream-engine.js';
+import { createSerialQueue, StreamEngine } from '../src/pipeline/stream-engine.js';
 
 const bytes = new Uint8Array(readFileSync(new URL('./fixtures/tone-12s.webm', import.meta.url)));
 const halve = async (left, right) => {
@@ -16,6 +16,8 @@ function startEngine(options = {}) {
     separate: options.separate ?? halve,
     onWindow: (w) => windows.push(w),
     onStatus: (s) => statuses.push(s),
+    config: options.config,
+    enqueue: options.enqueue,
   });
   return { engine, windows, statuses };
 }
@@ -180,4 +182,118 @@ test('a re-sent init mid-stream leaves a pre-roll hole that processing continues
   assert.ok(holeEnd - holeStart >= 3840 && holeEnd - holeStart <= 3840 + 48);
   assert.equal(engine.processed.length, 1);
   assert.ok(engine.processed[0][1] > holeEnd + 48000);
+});
+
+test('a separator that throws synchronously reports an error instead of wedging the engine', async () => {
+  const throwing = () => {
+    throw new Error('sync boom');
+  };
+  const { engine, statuses } = startEngine({ separate: throwing });
+  engine.pushChunk(bytes);
+  await engine.ready;
+  assert.doesNotThrow(() => engine.setPlayhead(0, true));
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.ok(statuses.some((s) => s.stage === 'error' && s.message === 'sync boom'));
+  assert.equal(engine.inFlight, null);
+});
+
+test('the engine is not idle while frames wait for the decoder', () => {
+  const { engine } = startEngine();
+  engine.pushChunk(bytes);
+  assert.ok(engine.queuedFrames.length > 0);
+  assert.equal(engine.isIdle(), false);
+});
+
+test('the engine is not idle while a window is being separated', async () => {
+  let release;
+  const slow = (left, right) => new Promise((resolve) => (release = () => resolve([left, right])));
+  const { engine } = startEngine({ separate: slow });
+  engine.pushChunk(bytes);
+  engine.setPlayhead(0, true);
+  await engine.ready;
+  assert.ok(engine.inFlight);
+  assert.equal(engine.isIdle(), false);
+  release();
+});
+
+test('a backward seek drops processed ranges and decoded pages far ahead of the new playhead', async () => {
+  const S = 48000;
+  const config = { firstWindowSeconds: 1, windowSeconds: 2, lookaheadSeconds: 2, keepAheadSeconds: 3 };
+  const { engine, windows } = startEngine({ config });
+  engine.pushChunk(bytes);
+  engine.setPlayhead(8, true);
+  await settle(engine);
+  assert.ok(engine.processed.some(([, e]) => e > 9 * S));
+  const before = windows.length;
+  engine.setPlayhead(1, true);
+  assert.ok(engine.processed.every(([, e]) => e <= (1 + 2 + 2) * S));
+  assert.ok(engine.timeline.ranges.every(([, e]) => e <= (1 + 3) * S));
+  assert.ok([...engine.timeline.pages.keys()].every((index) => index < 4));
+  await settle(engine);
+  assert.equal(windows[before].startSeconds, 1);
+});
+
+test('separate calls never overlap, even across a reset', async () => {
+  let active = 0;
+  let overlapped = false;
+  const releases = [];
+  const exclusive = (left, right) => {
+    active += 1;
+    if (active > 1) overlapped = true;
+    return new Promise((resolve) =>
+      releases.push(() => {
+        active -= 1;
+        resolve([left, right]);
+      }),
+    );
+  };
+  const { engine } = startEngine({ separate: exclusive });
+  engine.pushChunk(bytes);
+  engine.setPlayhead(0, true);
+  await engine.ready;
+  assert.equal(releases.length, 1);
+  engine.reset();
+  engine.pushChunk(bytes);
+  engine.setPlayhead(0, true);
+  await engine.ready;
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(overlapped, false);
+  assert.equal(releases.length, 1);
+  releases.shift()();
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(releases.length, 1);
+  assert.equal(overlapped, false);
+  releases.shift()();
+});
+
+test('engines sharing a queue never run separate concurrently', async () => {
+  let active = 0;
+  let overlapped = false;
+  const releases = [];
+  const exclusive = (left, right) => {
+    active += 1;
+    if (active > 1) overlapped = true;
+    return new Promise((resolve) =>
+      releases.push(() => {
+        active -= 1;
+        resolve([left, right]);
+      }),
+    );
+  };
+  const enqueue = createSerialQueue();
+  const first = startEngine({ separate: exclusive, enqueue });
+  const second = startEngine({ separate: exclusive, enqueue });
+  for (const { engine } of [first, second]) {
+    engine.pushChunk(bytes);
+    engine.setPlayhead(0, true);
+    await engine.ready;
+  }
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(releases.length, 1);
+  first.engine.reset();
+  releases.shift()();
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(overlapped, false);
+  assert.equal(releases.length, 1);
+  releases.shift()();
 });

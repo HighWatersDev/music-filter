@@ -14,11 +14,33 @@ export const DEFAULT_CONFIG = {
   urgencySeconds: 5,
   maxStartGapSeconds: 0.5,
   keepBehindSeconds: 10,
+  keepAheadSeconds: 90,
 };
 
+function trimAfter(ranges, point) {
+  return ranges.filter(([s]) => s < point).map(([s, e]) => [s, Math.min(e, point)]);
+}
+
+export function createSerialQueue() {
+  let tail = Promise.resolve();
+  return (task) => {
+    const run = tail.then(task);
+    tail = run.catch(() => {});
+    return run;
+  };
+}
+
 export class StreamEngine {
-  constructor({ separate, onWindow, onStatus = () => {}, onWarning = () => {}, config = {} }) {
+  constructor({
+    separate,
+    onWindow,
+    onStatus = () => {},
+    onWarning = () => {},
+    config = {},
+    enqueue = createSerialQueue(),
+  }) {
     this.separate = separate;
+    this.enqueue = enqueue;
     this.onWindow = onWindow;
     this.onStatus = onStatus;
     this.onWarning = onWarning;
@@ -59,18 +81,31 @@ export class StreamEngine {
   }
 
   setPlayhead(seconds, isPlaying) {
-    this.playhead = Math.max(0, Math.round(seconds * this.config.sampleRate));
+    const { sampleRate: rate, keepBehindSeconds, keepAheadSeconds, lookaheadSeconds, windowSeconds } = this.config;
+    const previous = this.playhead;
+    this.playhead = Math.max(0, Math.round(seconds * rate));
     this.isPlaying = isPlaying;
-    const keepFrom = this.playhead - this.config.keepBehindSeconds * this.config.sampleRate;
+    const keepFrom = this.playhead - keepBehindSeconds * rate;
     if (keepFrom > 0) {
       this.timeline.evictBefore(keepFrom);
       this.processed = trimBefore(this.processed, keepFrom);
     }
+    if (this.playhead < previous) this.evictTimelineAfter(this.playhead + keepAheadSeconds * rate);
+    this.processed = trimAfter(this.processed, this.playhead + (lookaheadSeconds + windowSeconds) * rate);
     this.pump();
   }
 
+  evictTimelineAfter(point) {
+    const { timeline } = this;
+    const firstDropped = Math.ceil(point / timeline.pageSamples);
+    for (const index of [...timeline.pages.keys()]) if (index >= firstDropped) timeline.pages.delete(index);
+    timeline.ranges = trimAfter(timeline.ranges, firstDropped * timeline.pageSamples);
+  }
+
   isIdle() {
-    return this.halted !== null || this.plan() === null;
+    if (this.halted !== null) return true;
+    if (this.inFlight || this.queuedFrames.length > 0 || (this.decoder && !this.decoder.isReady)) return false;
+    return this.plan() === null;
   }
 
   handleInit(init) {
@@ -150,9 +185,12 @@ export class StreamEngine {
 
     const { generation } = this;
     const rate = this.config.sampleRate;
-    const startedAt = Date.now();
+    let startedAt;
     this.inFlight = window;
-    this.separate(pcm[0], pcm[1], rate)
+    this.enqueue(() => {
+      startedAt = Date.now();
+      return this.separate(pcm[0], pcm[1], rate);
+    })
       .then(([left, right]) => {
         if (generation !== this.generation) return;
         this.processed = addRange(this.processed, window.start, window.end);
