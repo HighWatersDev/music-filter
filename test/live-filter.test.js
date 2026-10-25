@@ -1,6 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createLiveFilter, createOverloadMonitor, pickFeedVideo, selectFilterMode } from '../src/content/live-filter.js';
+import {
+  createLiveFilter,
+  createOverloadMonitor,
+  createWithWasmFallback,
+  pickFeedVideo,
+  selectFilterMode,
+} from '../src/content/live-filter.js';
 
 class FakeVideo extends EventTarget {
   muted = false;
@@ -471,4 +477,43 @@ test('a processor error disposes of the worklet', async () => {
   await ready();
   post({ type: 'error', stage: 'process', message: 'boom' });
   assert.deepEqual(filterNode.port.messages.at(-1), { type: 'dispose' });
+});
+
+const dataCloneError = () => Object.assign(new Error('The object could not be cloned.'), { name: 'DataCloneError' });
+
+test('the worklet gets the compiled module where the browser can clone it', () => {
+  const calls = [];
+  const node = createWithWasmFallback((wasm) => (calls.push(wasm), 'node'), { module: 'module', bytes: 'bytes' });
+  assert.equal(node, 'node');
+  assert.deepEqual(calls, ['module']);
+});
+
+test('the worklet gets the wasm bytes when the module cannot be cloned, as on Firefox', () => {
+  const calls = [];
+  const node = createWithWasmFallback(
+    (wasm) => {
+      calls.push(wasm);
+      if (wasm === 'module') throw dataCloneError();
+      return 'node';
+    },
+    { module: 'module', bytes: 'bytes' },
+  );
+  assert.equal(node, 'node');
+  assert.deepEqual(calls, ['module', 'bytes']);
+});
+
+test('other node construction errors are not retried', () => {
+  let calls = 0;
+  assert.throws(
+    () =>
+      createWithWasmFallback(
+        () => {
+          calls += 1;
+          throw new Error('NotSupportedError');
+        },
+        { module: 'module', bytes: 'bytes' },
+      ),
+    /NotSupportedError/,
+  );
+  assert.equal(calls, 1);
 });

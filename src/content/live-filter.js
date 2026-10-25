@@ -324,7 +324,7 @@ function loadAssets() {
   assetsPromise ??= Promise.all([
     fetch(extensionUrl(WASM_PATH))
       .then((response) => response.arrayBuffer())
-      .then((bytes) => WebAssembly.compile(bytes)),
+      .then(async (bytes) => ({ bytes, module: await WebAssembly.compile(bytes) })),
     fetch(extensionUrl(MODEL_PATH)).then((response) => response.arrayBuffer()),
   ]).catch((error) => {
     assetsPromise = undefined;
@@ -369,16 +369,39 @@ function waitForReady(node, onMessage) {
   });
 }
 
+const isCloneError = (error) => error?.name === 'DataCloneError' || /clone/i.test(String(error?.message));
+
+// Firefox 158 cannot clone a WebAssembly.Module from a content script into processorOptions. The bytes
+// clone everywhere, and the processor's initSync compiles them, at the cost of a compile on the audio thread.
+export function createWithWasmFallback(create, { module, bytes }) {
+  try {
+    return create(module);
+  } catch (error) {
+    if (!isCloneError(error)) throw error;
+    return create(bytes);
+  }
+}
+
+// Firefox content script objects are opaque to the page compartment, where the AudioWorkletNode
+// constructor serializes processorOptions, so they are copied into the page first.
+function toPageObject(value) {
+  return typeof cloneInto === 'function' ? cloneInto(value, window) : value;
+}
+
 async function createExtensionFilterNode(context, onMessage) {
   const [[wasm, modelBytes]] = await Promise.all([loadAssets(), addProcessorModule(context)]);
-  const node = new AudioWorkletNode(context, 'music-filter', {
-    numberOfInputs: 1,
-    numberOfOutputs: 1,
-    channelCount: 2,
-    channelCountMode: 'explicit',
-    outputChannelCount: [2],
-    processorOptions: { wasm, modelBytes, attenLimDb: ATTEN_LIM_DB, failMode: 'silence' },
-  });
+  const node = createWithWasmFallback(
+    (compiledOrBytes) =>
+      new AudioWorkletNode(context, 'music-filter', {
+        numberOfInputs: 1,
+        numberOfOutputs: 1,
+        channelCount: 2,
+        channelCountMode: 'explicit',
+        outputChannelCount: [2],
+        processorOptions: toPageObject({ wasm: compiledOrBytes, modelBytes, attenLimDb: ATTEN_LIM_DB, failMode: 'silence' }),
+      }),
+    wasm,
+  );
   return waitForReady(node, onMessage);
 }
 
