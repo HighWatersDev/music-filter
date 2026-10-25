@@ -1,0 +1,99 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { existsSync, readFileSync } from 'node:fs';
+import { createVoiceFilter, DFN_DELAY_SAMPLES } from '../src/pipeline/voice-filter.js';
+
+const FRAME = 480;
+const DF_JS = new URL('../vendor/df/df.js', import.meta.url);
+const DF_WASM = new URL('../extension/assets/df_bg.wasm', import.meta.url);
+const DF_MODEL = new URL('../extension/assets/DeepFilterNet3_onnx.tar.gz', import.meta.url);
+const hasDeepFilterNet = [DF_JS, DF_WASM, DF_MODEL].every((url) => existsSync(url));
+
+function delayingFilter(delaySamples, { warmUpFrames = 0 } = {}) {
+  const ring = new Float32Array(delaySamples);
+  const inputs = [];
+  let position = 0;
+  const processFrame = (frame) => {
+    inputs.push(frame.slice());
+    const out = new Float32Array(frame.length);
+    for (let i = 0; i < frame.length; i++) {
+      out[i] = ring[position];
+      ring[position] = frame[i];
+      position = (position + 1) % delaySamples;
+    }
+    return inputs.length <= warmUpFrames ? out.fill(99) : out;
+  };
+  return { processFrame, inputs };
+}
+
+function noise(length, seed) {
+  let state = seed;
+  return Float32Array.from({ length }, () => (state = (state * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff - 0.5);
+}
+
+function downmix(left, right) {
+  return Float32Array.from(left, (sample, i) => 0.5 * (sample + right[i]));
+}
+
+function assertSameSamples(actual, expected) {
+  assert.equal(actual.length, expected.length);
+  const firstMismatch = actual.findIndex((sample, i) => sample !== expected[i]);
+  assert.equal(firstMismatch, -1, `first mismatch at sample ${firstMismatch}`);
+}
+
+test('output lines up with the mono downmix sample for sample', () => {
+  const { processFrame } = delayingFilter(DFN_DELAY_SAMPLES);
+  const filter = createVoiceFilter({ processFrame, frameLength: FRAME, delaySamples: DFN_DELAY_SAMPLES });
+  const left = noise(48000 + 123, 1);
+  const right = noise(48000 + 123, 2);
+  const [voice, copy] = filter(left, right);
+  assertSameSamples(voice, downmix(left, right));
+  assertSameSamples(copy, voice);
+  assert.notEqual(copy.buffer, voice.buffer);
+});
+
+test('warm-up runs on the start of the window and its output is dropped', () => {
+  const warmUpSamples = 4800;
+  const { processFrame, inputs } = delayingFilter(DFN_DELAY_SAMPLES, { warmUpFrames: warmUpSamples / FRAME });
+  const filter = createVoiceFilter({ processFrame, frameLength: FRAME, delaySamples: DFN_DELAY_SAMPLES, warmUpSamples });
+  const left = noise(9600, 3);
+  const right = noise(9600, 4);
+  const mono = downmix(left, right);
+  const [voice] = filter(left, right);
+  assert.equal(inputs.length, warmUpSamples / FRAME + Math.ceil((9600 + DFN_DELAY_SAMPLES) / FRAME));
+  assertSameSamples(inputs[0], mono.subarray(0, FRAME));
+  assertSameSamples(inputs[warmUpSamples / FRAME], mono.subarray(0, FRAME));
+  assert.ok(voice.every((sample) => sample !== 99));
+  assertSameSamples(voice, mono);
+});
+
+test('a window shorter than a frame and the warm-up keeps its length', () => {
+  const { processFrame } = delayingFilter(DFN_DELAY_SAMPLES);
+  const filter = createVoiceFilter({ processFrame, frameLength: FRAME, delaySamples: DFN_DELAY_SAMPLES });
+  const left = noise(100, 5);
+  const right = noise(100, 6);
+  assertSameSamples(filter(left, right)[0], downmix(left, right));
+});
+
+test(
+  'real DeepFilterNet3 keeps the length and strongly attenuates a steady tone',
+  { skip: !hasDeepFilterNet && 'vendor/df and extension/assets missing, run npm run build:wasm' },
+  async () => {
+    const { initSync, df_create, df_get_frame_length, df_process_frame } = await import(DF_JS.href);
+    initSync(readFileSync(DF_WASM));
+    const handle = df_create(new Uint8Array(readFileSync(DF_MODEL)), 100);
+    const filter = createVoiceFilter({
+      processFrame: (frame) => df_process_frame(handle, frame),
+      frameLength: df_get_frame_length(handle),
+    });
+    const hiss = noise(2 * 48000, 7);
+    const input = Float32Array.from(hiss, (n, i) => 0.3 * Math.sin((2 * Math.PI * 440 * i) / 48000) + 0.1 * n);
+    const [voice, copy] = filter(input, input);
+    const rms = (samples) => Math.sqrt(samples.reduce((sum, s) => sum + s * s, 0) / samples.length);
+    assert.equal(voice.length, input.length);
+    assert.equal(copy.length, input.length);
+    assert.ok(voice.every(Number.isFinite));
+    const dropDb = 20 * Math.log10(rms(input) / rms(voice));
+    assert.ok(dropDb > 20, `RMS dropped ${dropDb.toFixed(1)} dB`);
+  },
+);

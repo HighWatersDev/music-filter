@@ -1,6 +1,8 @@
 const CONNECT = 'music-filter:connect';
 
-const transferablesOf = (data) => [data?.left?.buffer, data?.right?.buffer].filter(Boolean);
+const transferablesOf = (data) => [
+  ...new Set([data?.left?.buffer, data?.right?.buffer, data?.bytes instanceof ArrayBuffer ? data.bytes : null].filter(Boolean)),
+];
 
 function handleConnect(event) {
   const [port] = event.ports;

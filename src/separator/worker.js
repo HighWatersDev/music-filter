@@ -1,5 +1,8 @@
 import separate, { models, REVISIONS } from '@audio/neural-separate';
 import { backends, fetchModel, load } from '@audio/neural-runtime';
+import { initSync, df_create, df_get_frame_length, df_process_frame } from '../../vendor/df/df.js';
+import { StreamEngine } from '../pipeline/stream-engine.js';
+import { createVoiceFilter } from '../pipeline/voice-filter.js';
 
 const CACHE_NAME = 'audio-neural';
 const SESSION_OPTIONS = { enableCpuMemArena: false, enableMemPattern: false };
@@ -150,6 +153,68 @@ async function runSeparation({ id, model, device: requestedDevice, sampleRate, l
   );
 }
 
+const STREAM_MESSAGES = new Set(['stream-reset', 'stream-chunk', 'stream-abort', 'playhead']);
+const DFN_WASM_URL = new URL('../assets/df_bg.wasm', import.meta.url);
+const DFN_MODEL_URL = new URL('../assets/DeepFilterNet3_onnx.tar.gz', import.meta.url);
+const DFN_ATTEN_LIM_DB = 100;
+let stream = null;
+let voiceFilter;
+
+async function fetchBytes(url) {
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`${url.pathname} returned HTTP ${response.status}`);
+  return new Uint8Array(await response.arrayBuffer());
+}
+
+function loadVoiceFilter(report) {
+  if (voiceFilter) return voiceFilter;
+  report({ stage: 'loading' });
+  voiceFilter = Promise.all([fetchBytes(DFN_WASM_URL), fetchBytes(DFN_MODEL_URL)]).then(async ([wasm, model]) => {
+    initSync(await WebAssembly.compile(wasm));
+    const handle = df_create(model, DFN_ATTEN_LIM_DB);
+    return createVoiceFilter({
+      processFrame: (frame) => df_process_frame(handle, frame),
+      frameLength: df_get_frame_length(handle),
+    });
+  });
+  voiceFilter.catch(() => {
+    voiceFilter = undefined;
+  });
+  return voiceFilter;
+}
+
+function createWindowFilter(model, streamId) {
+  if (model === 'fake') return async (left, right) => [left.map((s) => s * 0.5), right.map((s) => s * 0.5)];
+  if (model !== 'dfn3') throw new Error(`unknown model ${model}`);
+  const report = (status) => post({ type: 'stream-status', streamId, ...status });
+  loadVoiceFilter(report).catch(() => {});
+  return async (left, right) => (await loadVoiceFilter(report))(left, right);
+}
+
+function handleStream(data) {
+  if (data.type === 'stream-reset') {
+    const { streamId, model } = data;
+    stream?.engine.reset();
+    stream = {
+      id: streamId,
+      engine: new StreamEngine({
+        separate: createWindowFilter(model, streamId),
+        onWindow: (window) => {
+          const transfer = [...new Set([window.left.buffer, window.right.buffer])];
+          post({ type: 'window', streamId, ...window }, transfer);
+        },
+        onStatus: (status) => post({ type: 'stream-status', streamId, ...status }),
+        onWarning: (message) => post({ type: 'stream-status', streamId, stage: 'warning', message }),
+      }),
+    };
+    return;
+  }
+  if (!stream || data.streamId !== stream.id) return;
+  if (data.type === 'stream-chunk') stream.engine.pushChunk(new Uint8Array(data.bytes));
+  if (data.type === 'stream-abort') stream.engine.abort();
+  if (data.type === 'playhead') stream.engine.setPlayhead(data.seconds, data.isPlaying);
+}
+
 async function handle(data) {
   if (data.type === 'prepare') {
     const ready = await prepare(data.model, data.device, (status) => post({ type: 'status', id: data.id, ...status }));
@@ -172,6 +237,14 @@ self.onmessage = ({ data }) => {
         hardwareConcurrency: navigator.hardwareConcurrency,
       }),
     );
+    return;
+  }
+  if (STREAM_MESSAGES.has(data.type)) {
+    try {
+      handleStream(data);
+    } catch (error) {
+      post({ type: 'stream-status', streamId: data.streamId, stage: 'error', message: error.message });
+    }
     return;
   }
   handle(data).catch((error) => post({ type: 'error', id: data.id, message: error.message }));
