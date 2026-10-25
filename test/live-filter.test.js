@@ -1,11 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createLiveFilter, createOverloadMonitor, selectFilterMode } from '../src/content/live-filter.js';
+import { createLiveFilter, createOverloadMonitor, pickFeedVideo, selectFilterMode } from '../src/content/live-filter.js';
 
 class FakeVideo extends EventTarget {
   muted = false;
   volume = 0.7;
   readyState = 1;
+  paused = false;
+  ended = false;
 }
 
 function fakeParam(value) {
@@ -22,6 +24,7 @@ function fakeNode(name) {
   const node = {
     name,
     connections: new Set(),
+    port: { messages: [], postMessage: (message) => node.port.messages.push(message) },
     connect(target) {
       node.connections.add(target);
       return target;
@@ -59,7 +62,7 @@ function fakeContext() {
 
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 
-function setup({ failToCreate = null } = {}) {
+function setup({ failToCreate = null, createContext = null } = {}) {
   const context = fakeContext();
   const filterNode = fakeNode('worklet');
   let onMessage;
@@ -67,7 +70,7 @@ function setup({ failToCreate = null } = {}) {
   let rejectNode;
   const views = [];
   const filter = createLiveFilter({
-    createContext: () => context,
+    createContext: createContext ?? (() => context),
     createFilterNode: (_context, handler) => {
       onMessage = handler;
       return new Promise((resolve, reject) => {
@@ -113,20 +116,42 @@ test('the mode override only applies on localhost and only with a known mode', (
   assert.equal(selectFilterMode({ vendor: 'Google Inc.', hostname: 'localhost', override: 'fast' }), 'live');
 });
 
-test('the overload monitor needs 5 s of frames before it judges', () => {
-  const monitor = createOverloadMonitor();
+const BAD_WINDOW = [100, 100, 100, 100, 100].map(() => ({ count: 100, overTwoQuanta: 6 }));
+const CLEAN_WINDOW = [100, 100, 100, 100, 100].map(() => ({ count: 100, overTwoQuanta: 5 }));
+const recordWindow = (monitor, window) => window.map((stats) => monitor.record(stats)).at(-1);
+
+test('the overload monitor judges whole 5 s windows only', () => {
+  const monitor = createOverloadMonitor({ tripWindows: 1 });
   for (let i = 0; i < 4; i++) assert.equal(monitor.record({ count: 100, overTwoQuanta: 50 }), false);
   assert.equal(monitor.record({ count: 100, overTwoQuanta: 50 }), true);
 });
 
-test('the overload monitor trips above 5% over the last 5 s only', () => {
+test('the overload monitor needs 3 bad windows in a row to trip', () => {
   const monitor = createOverloadMonitor();
-  for (let i = 0; i < 5; i++) assert.equal(monitor.record({ count: 100, overTwoQuanta: 5 }), false);
-  assert.equal(monitor.record({ count: 100, overTwoQuanta: 6 }), true);
-  for (let i = 0; i < 5; i++) monitor.record({ count: 100, overTwoQuanta: 0 });
-  assert.equal(monitor.record({ count: 100, overTwoQuanta: 20 }), false);
+  assert.equal(recordWindow(monitor, BAD_WINDOW), false);
+  assert.equal(recordWindow(monitor, BAD_WINDOW), false);
+  assert.equal(recordWindow(monitor, CLEAN_WINDOW), false);
+  assert.equal(recordWindow(monitor, BAD_WINDOW), false);
+  assert.equal(recordWindow(monitor, BAD_WINDOW), false);
+  assert.equal(recordWindow(monitor, BAD_WINDOW), true);
+});
+
+test('the overload monitor clears after 3 clean windows in a row', () => {
+  const monitor = createOverloadMonitor();
+  for (let i = 0; i < 3; i++) recordWindow(monitor, BAD_WINDOW);
+  assert.equal(recordWindow(monitor, CLEAN_WINDOW), true);
+  assert.equal(recordWindow(monitor, CLEAN_WINDOW), true);
+  assert.equal(recordWindow(monitor, BAD_WINDOW), true);
+  assert.equal(recordWindow(monitor, CLEAN_WINDOW), true);
+  assert.equal(recordWindow(monitor, CLEAN_WINDOW), true);
+  assert.equal(recordWindow(monitor, CLEAN_WINDOW), false);
+});
+
+test('a reset forgets the overload state', () => {
+  const monitor = createOverloadMonitor();
+  for (let i = 0; i < 3; i++) recordWindow(monitor, BAD_WINDOW);
   monitor.reset();
-  assert.equal(monitor.record({ count: 100, overTwoQuanta: 100 }), false);
+  assert.equal(recordWindow(monitor, BAD_WINDOW), false);
 });
 
 test('while starting, the original is muted and nothing reaches the output', async () => {
@@ -220,16 +245,35 @@ test('an element that cannot be routed fails closed with the element muted', () 
   assert.equal(views.at(-1).state, 'error');
 });
 
+const slowStats = { type: 'stats', count: 100, overQuantum: 60, overTwoQuanta: 10, meanMs: 4, p95Ms: 6, maxMs: 9 };
+const fastStats = { type: 'stats', count: 100, overQuantum: 0, overTwoQuanta: 0, meanMs: 1, p95Ms: 2, maxMs: 3 };
+
 test('an overloaded device mutes and says so instead of playing the original', async () => {
   const { context, filter, filterNode, views, ready, post } = setup();
-  filter.setEnabled(true, new FakeVideo());
+  const video = new FakeVideo();
+  filter.setEnabled(true, video);
   await ready();
-  for (let i = 0; i < 5; i++) {
-    post({ type: 'stats', count: 100, overQuantum: 60, overTwoQuanta: 10, meanMs: 4, p95Ms: 6, maxMs: 9 });
-  }
+  for (let i = 0; i < 10; i++) post(slowStats);
+  assert.equal(views.at(-1).state, 'filtered', 'two slow windows are not enough');
+  for (let i = 0; i < 5; i++) post(slowStats);
 
   assert.equal(views.at(-1).state, 'too-slow');
   assert.equal(filterOutputOf(context, filterNode).gain.value, 0);
+  assert.equal(originalGainOf(context).gain.value, 0);
+  assert.ok(context.sources.get(video).connections.has(filterNode), 'the worklet keeps running to measure recovery');
+  assert.notDeepEqual(filterNode.port.messages.at(-1), { type: 'idle', value: true });
+});
+
+test('an overloaded device recovers after 15 s of clean frames', async () => {
+  const { context, filter, filterNode, views, ready, post } = setup();
+  filter.setEnabled(true, new FakeVideo());
+  await ready();
+  for (let i = 0; i < 15; i++) post(slowStats);
+  for (let i = 0; i < 10; i++) post(fastStats);
+  assert.equal(views.at(-1).state, 'too-slow');
+  for (let i = 0; i < 5; i++) post(fastStats);
+  assert.equal(views.at(-1).state, 'filtered');
+  assert.equal(filterOutputOf(context, filterNode).gain.value, 1);
   assert.equal(originalGainOf(context).gain.value, 0);
 });
 
@@ -260,12 +304,13 @@ test('stats are summarised for the panel', async () => {
   });
 });
 
-test('a new element is attached through the registry and replaces the old feed', async () => {
+test('a new main element is attached through the registry and replaces the old feed', async () => {
   const { context, filter, filterNode, ready } = setup();
   const first = new FakeVideo();
   const second = new FakeVideo();
   filter.setEnabled(true, first);
   await ready();
+  first.paused = true;
   filter.attach(second);
 
   assert.ok(!context.sources.get(first).connections.has(filterNode));
@@ -311,4 +356,119 @@ test('a retry after a processor error builds a fresh worklet', async () => {
   assert.equal(views.at(-1).state, 'starting');
   await ready();
   assert.equal(views.at(-1).state, 'filtered');
+});
+
+const sourceOf = (context, video) => context.sources.get(video);
+const gainOf = (source) => [...source.connections].find((node) => node.gain);
+
+test('the main player is fed when it plays, and the feed falls back to another playing video', () => {
+  const main = new FakeVideo();
+  const preview = new FakeVideo();
+  assert.equal(pickFeedVideo({ main, videos: [preview, main] }), main);
+  main.paused = true;
+  assert.equal(pickFeedVideo({ main, videos: [preview, main] }), preview);
+  preview.ended = true;
+  assert.equal(pickFeedVideo({ main, videos: [preview, main] }), main);
+  assert.equal(pickFeedVideo({ main: null, videos: [preview] }), null);
+});
+
+test('every video on the page is routed at 0 while on, and only the playing one feeds the filter', async () => {
+  const { context, filter, filterNode, views, ready } = setup();
+  const main = new FakeVideo();
+  const short = new FakeVideo();
+  const preview = new FakeVideo();
+  preview.paused = true;
+  filter.setEnabled(true, main, [main, short, preview]);
+  await ready();
+
+  for (const video of [main, short, preview]) assert.equal(gainOf(sourceOf(context, video)).gain.value, 0);
+  assert.ok(sourceOf(context, main).connections.has(filterNode));
+  assert.ok(!sourceOf(context, short).connections.has(filterNode));
+  assert.ok(!sourceOf(context, preview).connections.has(filterNode));
+  assert.equal(views.at(-1).originalLevel, 0);
+
+  main.paused = true;
+  filter.refresh();
+  assert.ok(!sourceOf(context, main).connections.has(filterNode));
+  assert.ok(sourceOf(context, short).connections.has(filterNode));
+  for (const video of [main, short, preview]) assert.equal(gainOf(sourceOf(context, video)).gain.value, 0);
+
+  filter.setEnabled(false);
+  for (const video of [main, short, preview]) assert.equal(gainOf(sourceOf(context, video)).gain.value, 1);
+});
+
+test('a video added later while on is routed at 0 without taking the feed from the playing main player', async () => {
+  const { context, filter, filterNode, ready } = setup();
+  const main = new FakeVideo();
+  filter.setEnabled(true, main, [main]);
+  await ready();
+  const inline = new FakeVideo();
+  filter.attach(main, [main, inline]);
+  assert.equal(gainOf(sourceOf(context, inline)).gain.value, 0);
+  assert.ok(sourceOf(context, main).connections.has(filterNode));
+  assert.ok(!sourceOf(context, inline).connections.has(filterNode));
+});
+
+test('if the audio context cannot be created, every video is muted and the error is shown', () => {
+  const { filter, views } = setup({
+    createContext: () => {
+      throw new Error('AudioContext blocked');
+    },
+  });
+  const main = new FakeVideo();
+  const other = new FakeVideo();
+  filter.setEnabled(true, main, [main, other]);
+  assert.equal(main.muted, true);
+  assert.equal(other.muted, true);
+  assert.equal(views.at(-1).state, 'error');
+  assert.match(views.at(-1).detail, /AudioContext blocked/);
+  assert.equal(views.at(-1).originalLevel, 0);
+
+  const late = new FakeVideo();
+  filter.attach(main, [main, other, late]);
+  assert.equal(late.muted, true);
+
+  filter.setEnabled(false);
+  assert.ok([main, other, late].every((video) => video.muted === false && video.volume === 0.7));
+  assert.equal(views.at(-1).originalLevel, 1);
+});
+
+test('an internal failure while on mutes the attached videos', async () => {
+  const { filter, views, ready } = setup();
+  const main = new FakeVideo();
+  filter.setEnabled(true, main, [main]);
+  await ready();
+  filter.failClosed('internal error: boom');
+  assert.equal(main.muted, true);
+  assert.equal(views.at(-1).state, 'error');
+  assert.equal(views.at(-1).originalLevel, 0);
+});
+
+test('the worklet idles while it has nothing to filter and wakes when fed', async () => {
+  const { filter, filterNode, ready } = setup();
+  const video = new FakeVideo();
+  filter.setEnabled(true, video);
+  await ready();
+  assert.deepEqual(filterNode.port.messages, []);
+  filter.setEnabled(false);
+  assert.deepEqual(filterNode.port.messages, [{ type: 'idle', value: true }]);
+  filter.setEnabled(true, video);
+  assert.deepEqual(filterNode.port.messages.at(-1), { type: 'idle', value: false });
+});
+
+test('a worklet that is ready before any video routes starts idle', async () => {
+  const { filter, filterNode, ready } = setup();
+  const video = new FakeVideo();
+  video.readyState = 0;
+  filter.setEnabled(true, video);
+  await ready();
+  assert.deepEqual(filterNode.port.messages, [{ type: 'idle', value: true }]);
+});
+
+test('a processor error disposes of the worklet', async () => {
+  const { filter, filterNode, ready, post } = setup();
+  filter.setEnabled(true, new FakeVideo());
+  await ready();
+  post({ type: 'error', stage: 'process', message: 'boom' });
+  assert.deepEqual(filterNode.port.messages.at(-1), { type: 'dispose' });
 });

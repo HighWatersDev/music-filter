@@ -10,6 +10,8 @@ const OVERLOAD_WINDOW_FRAMES = 500;
 // 2026-10-26) 5 s windows reached 5 to 10% over one quantum with no frame over budget, and the
 // one-quantum rule muted the filter about 10 s in.
 const OVERLOAD_MAX_RATIO = 0.05;
+const OVERLOAD_TRIP_WINDOWS = 3;
+const OVERLOAD_CLEAR_WINDOWS = 3;
 const OUTPUT_RAMP_SECONDS = 0.03;
 
 const PROCESSOR_PATH = 'dist/processor.js';
@@ -26,21 +28,46 @@ export function selectFilterMode({ vendor, hostname, override }) {
   return vendor === SAFARI_VENDOR ? 'read-ahead' : 'live';
 }
 
-export function createOverloadMonitor({ windowFrames = OVERLOAD_WINDOW_FRAMES, maxRatio = OVERLOAD_MAX_RATIO } = {}) {
-  let windows = [];
+export function createOverloadMonitor({
+  windowFrames = OVERLOAD_WINDOW_FRAMES,
+  maxRatio = OVERLOAD_MAX_RATIO,
+  tripWindows = OVERLOAD_TRIP_WINDOWS,
+  clearWindows = OVERLOAD_CLEAR_WINDOWS,
+} = {}) {
+  let frames = 0;
+  let over = 0;
+  let badRun = 0;
+  let cleanRun = 0;
+  let isOverloaded = false;
   return {
     record({ count, overTwoQuanta }) {
-      windows.push({ count, overTwoQuanta });
-      let frames = windows.reduce((total, w) => total + w.count, 0);
-      while (frames - windows[0].count >= windowFrames) frames -= windows.shift().count;
-      if (frames < windowFrames) return false;
-      const over = windows.reduce((total, w) => total + w.overTwoQuanta, 0);
-      return over / frames > maxRatio;
+      frames += count;
+      over += overTwoQuanta;
+      if (frames < windowFrames) return isOverloaded;
+      const isBad = over / frames > maxRatio;
+      frames = 0;
+      over = 0;
+      badRun = isBad ? badRun + 1 : 0;
+      cleanRun = isBad ? 0 : cleanRun + 1;
+      if (badRun >= tripWindows) isOverloaded = true;
+      if (cleanRun >= clearWindows) isOverloaded = false;
+      return isOverloaded;
     },
     reset() {
-      windows = [];
+      frames = 0;
+      over = 0;
+      badRun = 0;
+      cleanRun = 0;
+      isOverloaded = false;
     },
   };
+}
+
+const isPlaying = (video) => !video.paused && !video.ended;
+
+export function pickFeedVideo({ main, videos }) {
+  if (main && isPlaying(main)) return main;
+  return videos.find(isPlaying) ?? main ?? null;
 }
 
 function createStatsSummary() {
@@ -86,6 +113,8 @@ function setLevel(gain, context, level) {
 
 export function createLiveFilter({ createContext, createFilterNode, onChange }) {
   const sources = new WeakMap();
+  const controls = new Map();
+  const fallbackMutes = createOriginalAudioRegistry({ mode: 'mute' });
   const overload = createOverloadMonitor();
   const stats = createStatsSummary();
   let context = null;
@@ -95,8 +124,7 @@ export function createLiveFilter({ createContext, createFilterNode, onChange }) 
   let isOverloaded = false;
   let pendingFilter = null;
   let filter = null;
-  let video = null;
-  let control = null;
+  let main = null;
   let feeding = null;
 
   function ensureGraph() {
@@ -121,7 +149,7 @@ export function createLiveFilter({ createContext, createFilterNode, onChange }) 
           output.gain.value = 0;
           node.connect(output);
           output.connect(context.destination);
-          filter = { node, output, pending };
+          filter = { node, output, pending, isIdle: false };
           pendingFilter = null;
           sync();
         },
@@ -143,7 +171,7 @@ export function createLiveFilter({ createContext, createFilterNode, onChange }) 
     }
     if (message.type !== 'stats') return;
     stats.record(message);
-    if (isEnabled && filter && overload.record(message)) isOverloaded = true;
+    if (isEnabled && feeding) isOverloaded = overload.record(message);
     sync();
   }
 
@@ -152,6 +180,7 @@ export function createLiveFilter({ createContext, createFilterNode, onChange }) 
     feeding?.disconnect(filter.node);
     feeding = null;
     filter.output.gain.value = 0;
+    filter.node.port?.postMessage({ type: 'dispose' });
     filter.node.disconnect();
     filter.output.disconnect();
     filter = null;
@@ -162,18 +191,37 @@ export function createLiveFilter({ createContext, createFilterNode, onChange }) 
     sync();
   }
 
+  function failClosed(message, videos = []) {
+    if (isEnabled) {
+      for (const video of new Set([...controls.keys(), ...videos])) {
+        if (video) controls.set(video, fallbackMutes.attach(video, null, { level: 0 }));
+      }
+    }
+    fail(message);
+  }
+
   function currentFailure() {
-    return failure ?? control?.error ?? null;
+    if (failure) return failure;
+    for (const control of controls.values()) if (control.error) return control.error;
+    return null;
+  }
+
+  function setIdle(isIdle) {
+    if (!filter || filter.isIdle === isIdle) return;
+    filter.isIdle = isIdle;
+    filter.node.port?.postMessage({ type: 'idle', value: isIdle });
   }
 
   function sync() {
+    const video = isEnabled ? pickFeedVideo({ main, videos: [...controls.keys()] }) : null;
     const source = video ? sources.get(video) ?? null : null;
-    const wanted = isEnabled && filter ? source : null;
+    const wanted = filter ? source : null;
     if (feeding !== wanted) {
       if (feeding && filter) feeding.disconnect(filter.node);
       if (wanted) wanted.connect(filter.node);
       feeding = wanted;
     }
+    setIdle(!feeding);
     const isAudible = Boolean(feeding) && !currentFailure() && !isOverloaded;
     if (filter) setLevel(filter.output, context, isAudible ? 1 : 0);
     onChange(view());
@@ -183,8 +231,15 @@ export function createLiveFilter({ createContext, createFilterNode, onChange }) 
     if (!isEnabled) return 'off';
     if (currentFailure()) return 'error';
     if (isOverloaded) return 'too-slow';
-    if (feeding && context.state === 'running') return 'filtered';
+    if (feeding && context?.state === 'running') return 'filtered';
     return 'starting';
+  }
+
+  function originalLevel() {
+    if (!isEnabled) return 1;
+    let level = 0;
+    for (const control of controls.values()) level = Math.max(level, control.currentLevel());
+    return level;
   }
 
   function view() {
@@ -192,32 +247,52 @@ export function createLiveFilter({ createContext, createFilterNode, onChange }) 
     return {
       state: current,
       detail: current === 'error' ? currentFailure() : LIVE_DETAIL,
-      originalLevel: isEnabled ? control?.currentLevel() ?? 0 : 1,
+      originalLevel: originalLevel(),
       stats: stats.current(),
     };
   }
 
-  function attach(next) {
-    if (!isEnabled || !next || next === video) return;
-    video = next;
-    control = registry.attach(next, context, { level: 0 });
+  function attachOne(video) {
+    if (!video || controls.has(video)) return;
+    if (!registry) {
+      controls.set(video, fallbackMutes.attach(video, null, { level: 0 }));
+      return;
+    }
+    try {
+      controls.set(video, registry.attach(video, context, { level: 0 }));
+    } catch (error) {
+      failClosed(`original audio could not be routed (${error.message})`, [video]);
+    }
+  }
+
+  function attach(nextMain, videos = []) {
+    if (!isEnabled) return;
+    for (const video of [nextMain, ...videos]) attachOne(video);
+    if (nextMain) main = nextMain;
     sync();
   }
 
-  function setEnabled(on, next) {
+  function setEnabled(on, nextMain, videos = []) {
     isEnabled = on;
     if (!on) {
       registry?.restoreAll();
-      video = null;
-      control = null;
+      fallbackMutes.restoreAll();
+      controls.clear();
+      main = null;
       sync();
       return;
     }
     failure = null;
     isOverloaded = false;
     overload.reset();
-    ensureGraph();
-    attach(next);
+    try {
+      ensureGraph();
+    } catch (error) {
+      failClosed(`audio could not start (${error.message})`, [nextMain, ...videos]);
+      attach(nextMain, videos);
+      return;
+    }
+    attach(nextMain, videos);
     ensureFilter();
     sync();
     context.resume?.().then(sync, () => {});
@@ -227,7 +302,11 @@ export function createLiveFilter({ createContext, createFilterNode, onChange }) 
     setEnabled,
     attach,
     fail,
+    failClosed,
     refresh: sync,
+    get isEnabled() {
+      return isEnabled;
+    },
     get context() {
       return context;
     },
@@ -313,6 +392,15 @@ function pickVideo() {
   return document.querySelector('#movie_player video.html5-main-video') ?? document.querySelector('video');
 }
 
+const allVideos = () => [...document.querySelectorAll('video')];
+
+function addsVideo({ addedNodes }) {
+  for (const node of addedNodes) {
+    if (node.nodeName === 'VIDEO' || node.getElementsByTagName?.('video').length) return true;
+  }
+  return false;
+}
+
 export function startLiveFilter() {
   releaseTapQueue();
   let panel;
@@ -322,26 +410,29 @@ export function startLiveFilter() {
     onChange: (view) => panel?.update(view),
   });
   const tick = () => {
-    const { context } = filter;
-    if (!context) return;
+    if (!filter.isEnabled) return;
     try {
-      filter.attach(pickVideo());
-      if (context.state !== 'running') context.resume().catch(() => {});
+      filter.attach(pickVideo(), allVideos());
+      const { context } = filter;
+      if (context && context.state !== 'running') context.resume().catch(() => {});
       filter.refresh();
     } catch (error) {
-      filter.fail(`internal error: ${error.message}`);
+      filter.failClosed(`internal error: ${error.message}`, allVideos());
     }
   };
   panel = createPanel({
     mode: 'live',
     onToggle: (on) => {
       try {
-        filter.setEnabled(on, pickVideo());
+        filter.setEnabled(on, pickVideo(), allVideos());
       } catch (error) {
-        filter.fail(`internal error: ${error.message}`);
+        filter.failClosed(`internal error: ${error.message}`, allVideos());
       }
     },
   });
-  for (const type of ['loadedmetadata', 'play', 'playing', 'emptied']) document.addEventListener(type, tick, true);
+  new MutationObserver((mutations) => {
+    if (filter.isEnabled && mutations.some(addsVideo)) tick();
+  }).observe(document.documentElement, { childList: true, subtree: true });
+  for (const type of ['loadedmetadata', 'play', 'playing', 'pause', 'emptied']) document.addEventListener(type, tick, true);
   setInterval(tick, TICK_MS);
 }
