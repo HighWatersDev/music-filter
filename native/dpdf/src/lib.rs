@@ -35,6 +35,8 @@ fn read_model(model_bytes: &[u8]) -> TractResult<(ModelProto, ModelInfo)> {
     initial_state[..erb.len()].copy_from_slice(&erb);
     initial_state[erb_size..erb_size + spec.len()].copy_from_slice(&spec);
 
+    ensure!(n == 2 * hop, "expected n_fft to be twice the hop, got n_fft {n} and hop {hop}");
+
     let info = ModelInfo { n, hop, bins: n / 2 + 1, initial_state };
     Ok((proto, info))
 }
@@ -55,15 +57,19 @@ fn optimized_model(proto: &ModelProto, info: &ModelInfo) -> TractResult<TypedMod
 // DPDFNet carries its hidden state through state_in and state_out, so every call must reseed
 // from initial_h. Without this, the second hop onward runs on a stale hidden state.
 fn reseed_recurrences_every_call(mut model: TypedModel) -> TractResult<TypedModel> {
+    let mut reseeded = 0;
     for node in model.nodes_mut() {
         if let Some(gru) = node.op_as_mut::<GruSeq>() {
             gru.reset_every_turn = true;
+            reseeded += 1;
         } else if let Some(scan) = node.op_as::<OptScan>() {
             let mut params = (**scan).clone();
             params.reset_every_turn = true;
             node.op = Box::new(OptScan::new(Arc::new(params)));
+            reseeded += 1;
         }
     }
+    ensure!(reseeded > 0, "found no GRU or Scan node to reseed, so tract has renamed or changed its recurrent ops");
     Ok(model)
 }
 
@@ -323,6 +329,11 @@ mod tests {
             let (_, info) = read_model(&bytes).unwrap();
             assert_eq!((info.n, info.hop, info.bins), (320, 160, 161), "{name}");
         }
+    }
+
+    #[test]
+    fn reseeding_a_model_without_recurrences_fails() {
+        assert!(reseed_recurrences_every_call(TypedModel::default()).is_err());
     }
 
     #[test]
