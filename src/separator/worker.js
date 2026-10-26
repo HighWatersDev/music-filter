@@ -156,7 +156,10 @@ async function runSeparation({ id, model, device: requestedDevice, sampleRate, l
 
 const STREAM_MESSAGES = new Set(['stream-reset', 'stream-chunk', 'stream-abort', 'playhead']);
 const DPDF_WASM_URL = new URL('../assets/dpdf_bg.wasm', import.meta.url);
-const DPDF_MODEL_URLS = { dpdfnet4: new URL('../assets/dpdfnet4.onnx', import.meta.url) };
+const DPDF_MODEL_URLS = {
+  dpdfnet4: new URL('../assets/dpdfnet4.onnx', import.meta.url),
+  dpdfnet2: new URL('../assets/dpdfnet2.onnx', import.meta.url),
+};
 const DPDF_SAMPLE_RATE = 48000;
 // 'dfn3' is what the read-ahead content script sent before the DPDFNet swap. It now gets DPDFNet-4 too.
 const VOICE_MODELS = new Set(['dpdfnet4', 'dfn3']);
@@ -188,6 +191,7 @@ async function instantiateDpdf() {
 const readAheadFilters = createReadAheadFilters({
   instantiate: instantiateDpdf,
   fetchModel: (model) => fetchBytes(DPDF_MODEL_URLS[model]),
+  onModelChange: ({ model, rtf }) => post({ type: 'stream-status', streamId: stream?.id, stage: 'model', model, rtf }),
 });
 
 function createWindowFilter(model, streamId) {

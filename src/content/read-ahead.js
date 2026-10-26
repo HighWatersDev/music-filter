@@ -21,6 +21,7 @@ const TICK_EVENTS = ['loadedmetadata', 'play', 'playing', 'seeked', 'ratechange'
 const isSafari = navigator.vendor === 'Apple Computer, Inc.';
 const isLocalTest = location.hostname === 'localhost' && localStorage.getItem('mf_fake_separator') === '1';
 const MODEL = isLocalTest ? 'fake' : 'dpdfnet4';
+const MODEL_LABELS = { dpdfnet2: 'DPDFNet-2' };
 
 const streams = new Map();
 const objectUrls = new Map();
@@ -41,6 +42,7 @@ let heldSince = null;
 let playRequestedAt = null;
 let tappedPlayerVolume = null;
 let retainedLimit = RETAINED_BYTES;
+let lighterModel = null;
 
 let panel;
 
@@ -208,7 +210,11 @@ function handleWorkerMessage(message, connection) {
   if (message.stage === 'unsupported' || message.stage === 'error') fail(message.reason ?? message.message);
   if (message.stage === 'starved') replay(message.streamId);
   if (message.stage === 'loading') detail = 'loading voice filter';
-  if (message.stage === 'window') detail = `window ${message.durationSeconds.toFixed(0)} s in ${(message.computeMs / 1000).toFixed(1)} s`;
+  if (message.stage === 'model') lighterModel = MODEL_LABELS[message.model] ?? message.model;
+  if (message.stage === 'window') {
+    const timing = `window ${message.durationSeconds.toFixed(0)} s in ${(message.computeMs / 1000).toFixed(1)} s`;
+    detail = lighterModel ? `${lighterModel}, ${timing}` : timing;
+  }
 }
 
 function currentFailure() {
