@@ -1,7 +1,7 @@
 const FACTOR = 3;
 const HIGH_RATE = 48000;
-const CUTOFF_HZ = 7500;
-const KAISER_BETA = 8.4;
+const CUTOFF_HZ = 7600;
+const KAISER_BETA = 7.0;
 const HALF_LENGTH = 144;
 const TAPS = 2 * HALF_LENGTH + 1;
 
