@@ -10,6 +10,8 @@ const FILTER_SAMPLE_RATE = 48000;
 const FIRST_MODEL = 'dpdfnet4';
 const FAIL_MODES = new Set(['silence', 'passthrough']);
 
+const wasmSourceOf = (wasm) => (wasm instanceof ArrayBuffer || ArrayBuffer.isView(wasm) ? 'bytes' : 'module');
+
 function isAllFinite(samples) {
   for (let i = 0; i < samples.length; i++) {
     if (!Number.isFinite(samples[i])) return false;
@@ -53,6 +55,7 @@ export function defineMusicFilterProcessor({ Base, engines, sampleRate, clock })
           type: 'ready',
           model: choice.model,
           isPinned: this.isPinned,
+          wasmSource: wasmSourceOf(wasm),
           warmupMs: choice.warmupMs,
           sampleRate,
           clock: clock.name,

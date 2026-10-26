@@ -190,8 +190,8 @@ export function createLiveFilter({ createContext, createFilterNode, onChange }) 
     pendingFilter = pending;
   }
 
-  function engineInfo({ model, isPinned = false, latencySamples, warmupMs }) {
-    return { model, isPinned, latencySamples, warmupMs };
+  function engineInfo({ model, isPinned = false, wasmSource, latencySamples, warmupMs }) {
+    return { model, isPinned, wasmSource, latencySamples, warmupMs };
   }
 
   function handleMessage(message, pending) {
@@ -210,7 +210,8 @@ export function createLiveFilter({ createContext, createFilterNode, onChange }) 
       return;
     }
     if (message.type === 'model') {
-      filter.engine = engineInfo({ ...message, isPinned: filter.engine.isPinned });
+      const { isPinned, wasmSource } = filter.engine;
+      filter.engine = engineInfo({ ...message, isPinned, wasmSource });
       isSwitching = false;
       isOverloaded = false;
       overload.reset();

@@ -21,6 +21,13 @@ test('the processor initialises the wasm from the module it was given', () => {
   assert.deepEqual(engines.initCalls, ['wasm-module']);
 });
 
+test('ready says whether the wasm arrived compiled or as bytes', () => {
+  const compiled = createProcessor({ engines: fakeEngines(), failMode: 'silence' });
+  assert.equal(messagesOf(compiled, 'ready')[0].wasmSource, 'module');
+  const bytes = createProcessor({ engines: fakeEngines(), failMode: 'silence', options: { wasm: new ArrayBuffer(8) } });
+  assert.equal(messagesOf(bytes, 'ready')[0].wasmSource, 'bytes');
+});
+
 test('a fast device keeps DPDFNet-4 and reports its warm-up mean', () => {
   const engines = fakeEngines({ costs: { dpdfnet4: 1.25, dpdfnet2: 1 } });
   const processor = createProcessor({ engines, failMode: 'silence' });

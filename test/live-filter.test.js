@@ -91,7 +91,7 @@ function setup({ failToCreate = null, createContext = null, model = 'dpdfnet4', 
         resolveNode = () =>
           resolve({
             node: filterNode,
-            ready: { type: 'ready', model, isPinned, latencySamples: TOTAL_DELAY, warmupMs: { [model]: 1.25 } },
+            ready: { type: 'ready', model, isPinned, wasmSource: 'bytes', latencySamples: TOTAL_DELAY, warmupMs: { [model]: 1.25 } },
           });
         rejectNode = reject;
         if (failToCreate) reject(failToCreate);
@@ -438,6 +438,19 @@ test('frames just over one render quantum do not count as overload', async () =>
     post({ type: 'stats', count: 100, overQuantum: 20, overTwoQuanta: 1, meanMs: 1.6, p95Ms: 3, maxMs: 12 });
   }
   assert.equal(views.at(-1).state, 'filtered');
+});
+
+test('the panel gets the engine details from the ready message', async () => {
+  const { filter, views, ready } = setup({ isPinned: true });
+  filter.setEnabled(true, new FakeVideo());
+  await ready();
+  assert.deepEqual(views.at(-1).engine, {
+    model: 'dpdfnet4',
+    isPinned: true,
+    wasmSource: 'bytes',
+    latencySamples: TOTAL_DELAY,
+    warmupMs: { dpdfnet4: 1.25 },
+  });
 });
 
 test('stats are summarised for the panel', async () => {
