@@ -87,3 +87,22 @@ export async function watchPanel(page) {
   });
   return () => page.evaluate(() => ({ ...__seen, originalLevelsWhileOn: [...__seen.originalLevelsWhileOn] }));
 }
+
+// Chrome's trace reports, for each render quantum, how long until it reaches the speakers. A processor
+// constructor that blocks the audio thread grows that from about 32 ms to about 197 ms for good.
+export async function traceOutputDelay(page, durationMs = 1000) {
+  const cdp = await page.context().newCDPSession(page);
+  const events = [];
+  cdp.on('Tracing.dataCollected', ({ value }) => events.push(...value));
+  const complete = new Promise((resolve) => cdp.once('Tracing.tracingComplete', resolve));
+  await cdp.send('Tracing.start', { categories: 'webaudio', transferMode: 'ReportEvents' });
+  await page.waitForTimeout(durationMs);
+  await cdp.send('Tracing.end');
+  await complete;
+  await cdp.detach();
+  const delays = events
+    .filter((event) => event.name === 'RealtimeAudioDestinationHandler::Render' && event.ph === 'X')
+    .map((event) => event.args['playout_delay (ms)']);
+  if (!delays.length) throw new Error('the trace has no render events');
+  return { minMs: Math.min(...delays), maxMs: Math.max(...delays) };
+}

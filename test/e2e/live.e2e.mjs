@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
-import { snapshot, toggle, video, waitFor, watchPanel, withExtensionPage } from './harness.mjs';
+import { snapshot, toggle, traceOutputDelay, video, waitFor, watchPanel, withExtensionPage } from './harness.mjs';
 
 const PORT = 8791;
 const FILTERED_WITHIN_MS = 3000;
 const STEP_TIMEOUT_MS = 5000;
+const MAX_OUTPUT_DELAY_MS = 80;
+const DELAY_TOLERANCE_MS = 10;
 
 const LIVE_MODELS = { dpdfnet4: 'DPDFNet-4', dpdfnet2: 'DPDFNet-2' };
 const stats = (s) => JSON.parse(s.panel.stats ?? 'null');
@@ -36,6 +38,16 @@ await withExtensionPage({ port: PORT, storage: { mf_mode: 'live' } }, async (pag
   assert.equal(playing.panel.model, model);
   assert.equal(playing.panel.originalLevel, '0');
   assert.ok(stats(playing)?.frames > 0, `the worklet reported no frames: ${playing.panel.stats}`);
+
+  const output = await traceOutputDelay(page);
+  console.log('delay from the worklet to the output', output);
+  assert.ok(output.maxMs < MAX_OUTPUT_DELAY_MS, `the output buffer grew: ${JSON.stringify(output)}`);
+  const reportedMs = Number((await page.textContent('[data-state]')).match(/(\d+) ms delay/)[1]);
+  const engineMs = (engine(playing).latencySamples / 48000) * 1000;
+  assert.ok(
+    Math.abs(reportedMs - engineMs - output.maxMs) <= DELAY_TOLERANCE_MS,
+    `the panel says ${reportedMs} ms but the engine adds ${engineMs.toFixed(0)} ms and the output ${output.maxMs} ms`,
+  );
 
   await video(page, () => (document.querySelector('video').playbackRate = 1.5));
   await page.waitForTimeout(1500);

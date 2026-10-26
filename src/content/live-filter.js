@@ -20,6 +20,7 @@ const WASM_PATH = 'assets/dpdf_bg.wasm';
 const MODEL_PATHS = { dpdfnet4: 'assets/dpdfnet4.onnx', dpdfnet2: 'assets/dpdfnet2.onnx' };
 const SAMPLE_RATE = 48000;
 const READY_TIMEOUT_MS = 10000;
+const SWITCH_TIMEOUT_MS = 10000;
 const TICK_MS = 250;
 const TAP_CONNECT = 'music-filter:tap-connect';
 
@@ -39,6 +40,9 @@ export function overloadAction({ model, isPinned = false, isOverloaded }) {
   return model === FALLBACK_MODEL || isPinned ? 'too-slow' : 'switch';
 }
 
+// baseLatency is left out on purpose. Chrome's outputLatency already includes the 256-frame buffer that
+// baseLatency reports (traced on an M2 Pro: 27 ms device delay + 5.3 ms buffer = 32 ms = outputLatency),
+// and Firefox reports a baseLatency of 0.
 export function liveDetail({ model, latencySamples, sampleRate, outputLatency }) {
   if (!MODEL_LABELS[model]) return 'live';
   const delayMs = Math.round((latencySamples / sampleRate) * 1000 + (outputLatency || 0) * 1000);
@@ -132,7 +136,12 @@ function setLevel(gain, context, level) {
   gain.gain.linearRampToValueAtTime(level, now + OUTPUT_RAMP_SECONDS);
 }
 
-export function createLiveFilter({ createContext, createFilterNode, onChange }) {
+export function createLiveFilter({
+  createContext,
+  createFilterNode,
+  onChange,
+  switchTimeoutMs = SWITCH_TIMEOUT_MS,
+}) {
   const sources = new WeakMap();
   const controls = new Map();
   const fallbackMutes = createOriginalAudioRegistry({ mode: 'mute' });
@@ -149,6 +158,7 @@ export function createLiveFilter({ createContext, createFilterNode, onChange }) 
   let filter = null;
   let main = null;
   let feeding = null;
+  let holds = 0;
 
   function ensureGraph() {
     context ??= createContext();
@@ -161,10 +171,29 @@ export function createLiveFilter({ createContext, createFilterNode, onChange }) 
     });
   }
 
+  // A processor constructor that blocks the audio thread for a few hundred ms makes Chrome grow its
+  // output buffer to 8192 frames for the life of the context, which puts the audio 165 ms further
+  // behind the video. Nothing renders while the context is suspended, so the buffer never grows.
+  async function whileSuspended(task) {
+    holds += 1;
+    try {
+      await context.suspend?.();
+      return await task();
+    } finally {
+      holds -= 1;
+      wake();
+    }
+  }
+
+  function wake() {
+    if (holds > 0 || !context || context.state === 'running' || context.state === 'closed') return;
+    context.resume?.().then(sync, () => {});
+  }
+
   function ensureFilter() {
     if (filter || pendingFilter) return;
     const pending = Promise.resolve()
-      .then(() => createFilterNode(context, (message) => handleMessage(message, pending)))
+      .then(() => whileSuspended(() => createFilterNode(context, (message) => handleMessage(message, pending))))
       .then(
         ({ node, ready }) => {
           if (pending !== pendingFilter) return;
@@ -172,7 +201,7 @@ export function createLiveFilter({ createContext, createFilterNode, onChange }) 
           output.gain.value = 0;
           node.connect(output);
           output.connect(context.destination);
-          filter = { node, output, pending, isIdle: false, engine: engineInfo(ready) };
+          filter = { node, output, pending, isIdle: false, engine: engineInfo(ready), settleSwitch: null };
           pendingFilter = null;
           sync();
         },
@@ -212,6 +241,7 @@ export function createLiveFilter({ createContext, createFilterNode, onChange }) 
     if (message.type === 'model') {
       const { isPinned, wasmSource } = filter.engine;
       filter.engine = engineInfo({ ...message, isPinned, wasmSource });
+      settleSwitch();
       isSwitching = false;
       isOverloaded = false;
       overload.reset();
@@ -231,11 +261,38 @@ export function createLiveFilter({ createContext, createFilterNode, onChange }) 
     if (action !== 'switch') return;
     overload.reset();
     isSwitching = true;
-    filter.node.port?.postMessage({ type: 'use-model', model: FALLBACK_MODEL });
+    requestSwitch(filter);
+  }
+
+  function requestSwitch(switching) {
+    let timer;
+    whileSuspended(
+      () =>
+        new Promise((resolve, reject) => {
+          if (filter !== switching) return resolve();
+          timer = setTimeout(() => reject(new Error('the voice filter did not switch models')), switchTimeoutMs);
+          switching.settleSwitch = resolve;
+          switching.node.port?.postMessage({ type: 'use-model', model: FALLBACK_MODEL });
+        }),
+    )
+      .catch((error) => {
+        if (filter !== switching) return;
+        isSwitching = false;
+        discardFilter();
+        fail(error.message);
+      })
+      .finally(() => clearTimeout(timer));
+  }
+
+  function settleSwitch() {
+    const settle = filter?.settleSwitch;
+    if (filter) filter.settleSwitch = null;
+    settle?.();
   }
 
   function discardFilter() {
     if (!filter) return;
+    settleSwitch();
     feeding?.disconnect(filter.node);
     feeding = null;
     filter.output.gain.value = 0;
@@ -365,7 +422,7 @@ export function createLiveFilter({ createContext, createFilterNode, onChange }) 
     attach(nextMain, videos);
     ensureFilter();
     sync();
-    context.resume?.().then(sync, () => {});
+    wake();
   }
 
   function enforce() {
@@ -380,7 +437,10 @@ export function createLiveFilter({ createContext, createFilterNode, onChange }) 
     enforce,
     fail,
     failClosed,
-    refresh: sync,
+    refresh() {
+      wake();
+      sync();
+    },
     get isEnabled() {
       return isEnabled;
     },
@@ -538,8 +598,6 @@ export function startLiveFilter() {
     try {
       filter.attach(pickVideo(), allVideos());
       filter.enforce();
-      const { context } = filter;
-      if (context && context.state !== 'running') context.resume().catch(() => {});
       filter.refresh();
     } catch (error) {
       filter.failClosed(`internal error: ${error.message}`, allVideos());

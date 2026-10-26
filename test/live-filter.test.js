@@ -56,7 +56,15 @@ function fakeContext() {
     destination: fakeNode('destination'),
     gains: [],
     sources: new Map(),
-    resume: async () => {},
+    audioCalls: [],
+    async suspend() {
+      context.audioCalls.push('suspend');
+      context.state = 'suspended';
+    },
+    async resume() {
+      context.audioCalls.push('resume');
+      context.state = 'running';
+    },
     createGain() {
       const gain = fakeNode(`gain${context.gains.length}`);
       gain.gain = fakeParam(1);
@@ -76,34 +84,51 @@ const flush = () => new Promise((resolve) => setImmediate(resolve));
 
 const TOTAL_DELAY = 3165;
 
-function setup({ failToCreate = null, createContext = null, model = 'dpdfnet4', isPinned = false } = {}) {
+function setup({
+  failToCreate = null,
+  createContext = null,
+  model = 'dpdfnet4',
+  isPinned = false,
+  switchTimeoutMs,
+} = {}) {
   const context = fakeContext();
   const filterNode = fakeNode('worklet');
   let onMessage;
   let resolveNode;
   let rejectNode;
   const views = [];
+  const builds = [];
   const filter = createLiveFilter({
     createContext: createContext ?? (() => context),
     createFilterNode: (_context, handler) => {
       onMessage = handler;
+      builds.push({ contextState: context.state });
       return new Promise((resolve, reject) => {
         resolveNode = () =>
           resolve({
             node: filterNode,
-            ready: { type: 'ready', model, isPinned, wasmSource: 'bytes', latencySamples: TOTAL_DELAY, warmupMs: { [model]: 1.25 } },
+            ready: {
+              type: 'ready',
+              model,
+              isPinned,
+              wasmSource: 'bytes',
+              latencySamples: TOTAL_DELAY,
+              warmupMs: { [model]: 1.25 },
+            },
           });
         rejectNode = reject;
         if (failToCreate) reject(failToCreate);
       });
     },
     onChange: (view) => views.push(view),
+    switchTimeoutMs,
   });
   return {
     context,
     filter,
     filterNode,
     views,
+    builds,
     post: (message) => onMessage(message),
     ready: async () => {
       await flush();
@@ -352,6 +377,7 @@ test('an overload on DPDFNet-4 asks the worklet for DPDFNet-2 and mutes the outp
   filter.setEnabled(true, video);
   await ready();
   for (let i = 0; i < 15; i++) post(slowStats);
+  await flush();
 
   assert.deepEqual(filterNode.port.messages.at(-1), { type: 'use-model', model: 'dpdfnet2' });
   assert.equal(views.at(-1).state, 'starting');
@@ -362,6 +388,7 @@ test('an overload on DPDFNet-4 asks the worklet for DPDFNet-2 and mutes the outp
   assert.equal(filterNode.port.messages.filter((m) => m.type === 'use-model').length, 1, 'stats during the switch are ignored');
 
   post({ type: 'model', model: 'dpdfnet2', latencySamples: TOTAL_DELAY, warmupMs: { dpdfnet2: 1.375 } });
+  await flush();
   assert.equal(views.at(-1).state, 'filtered');
   assert.equal(views.at(-1).model, 'dpdfnet2');
   assert.equal(views.at(-1).detail, 'live, DPDFNet-2, 76 ms delay');
@@ -384,7 +411,9 @@ test('an overload after switching to DPDFNet-2 shows the too-slow message', asyn
   filter.setEnabled(true, new FakeVideo());
   await ready();
   for (let i = 0; i < 15; i++) post(slowStats);
+  await flush();
   post({ type: 'model', model: 'dpdfnet2', latencySamples: TOTAL_DELAY, warmupMs: {} });
+  await flush();
   for (let i = 0; i < 10; i++) post(slowStats);
   assert.equal(views.at(-1).state, 'filtered', 'the new model starts with a clean overload record');
   for (let i = 0; i < 5; i++) post(slowStats);
@@ -689,4 +718,118 @@ test('the tick re-mutes a fallback-muted video that an ad unmuted', () => {
   video.muted = false;
   filter.enforce();
   assert.equal(video.muted, true);
+});
+
+test('the worklet is built while the context is suspended and the context resumes once it is ready', async () => {
+  const { context, filter, builds, views, ready } = setup();
+  filter.setEnabled(true, new FakeVideo());
+  await flush();
+  assert.deepEqual(builds.map((build) => build.contextState), ['suspended']);
+  assert.equal(context.state, 'suspended', 'still suspended while the processor warms up');
+  assert.equal(views.at(-1).state, 'starting');
+
+  await ready();
+  assert.equal(context.state, 'running');
+  assert.deepEqual(context.audioCalls.slice(-2), ['suspend', 'resume']);
+  assert.equal(views.at(-1).state, 'filtered');
+});
+
+test('the tick does not resume the context while the worklet is being built', async () => {
+  const { context, filter } = setup();
+  filter.setEnabled(true, new FakeVideo());
+  await flush();
+  const calls = context.audioCalls.length;
+  filter.refresh();
+  filter.refresh();
+  assert.deepEqual(context.audioCalls.slice(calls), []);
+  assert.equal(context.state, 'suspended');
+});
+
+test('the tick resumes a context that something else suspended', async () => {
+  const { context, filter, ready } = setup();
+  filter.setEnabled(true, new FakeVideo());
+  await ready();
+  context.state = 'suspended';
+  filter.refresh();
+  assert.equal(context.audioCalls.at(-1), 'resume');
+});
+
+test('a worklet that fails to start still resumes the context', async () => {
+  const { context, filter } = setup({ failToCreate: new Error('addModule failed') });
+  filter.setEnabled(true, new FakeVideo());
+  await flush();
+  assert.equal(context.state, 'running');
+});
+
+test('turning the filter off while the worklet is built keeps the context suspended until it is ready', async () => {
+  const { context, filter, views, ready } = setup();
+  const video = new FakeVideo();
+  filter.setEnabled(true, video);
+  await flush();
+  filter.setEnabled(false);
+  assert.equal(context.state, 'suspended');
+  assert.equal(views.at(-1).state, 'off');
+  await ready();
+  assert.equal(context.state, 'running');
+  assert.equal(originalGainOf(context).gain.value, 1);
+});
+
+async function overloadedSetup(options) {
+  const live = setup(options);
+  live.filter.setEnabled(true, new FakeVideo());
+  await live.ready();
+  for (let i = 0; i < 15; i++) live.post(slowStats);
+  return live;
+}
+
+test('a model switch suspends the context before asking the worklet and resumes after the reply', async () => {
+  const { context, filter, filterNode, views, ready, post } = setup();
+  filter.setEnabled(true, new FakeVideo());
+  await ready();
+  const statesWhenAsked = [];
+  const postMessage = filterNode.port.postMessage;
+  filterNode.port.postMessage = (message) => {
+    if (message.type === 'use-model') statesWhenAsked.push(context.state);
+    postMessage(message);
+  };
+  for (let i = 0; i < 15; i++) post(slowStats);
+  await flush();
+  assert.deepEqual(statesWhenAsked, ['suspended']);
+  assert.equal(context.state, 'suspended');
+  assert.deepEqual(filterNode.port.messages.at(-1), { type: 'use-model', model: 'dpdfnet2' });
+
+  post({ type: 'model', model: 'dpdfnet2', latencySamples: TOTAL_DELAY, warmupMs: { dpdfnet2: 1.375 } });
+  await flush();
+  assert.equal(context.state, 'running');
+  assert.equal(views.at(-1).state, 'filtered');
+});
+
+for (const reply of [
+  { type: 'too-slow', warmupMs: { dpdfnet2: 2.5 } },
+  { type: 'error', stage: 'switch', message: 'boom' },
+]) {
+  test(`a model switch that ends in ${reply.type} resumes the context`, async () => {
+    const { context, post } = await overloadedSetup();
+    await flush();
+    post(reply);
+    await flush();
+    assert.equal(context.state, 'running');
+  });
+}
+
+test('a model switch with no reply fails with a message and resumes the context', async () => {
+  const { context, views } = await overloadedSetup({ switchTimeoutMs: 5 });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  await flush();
+  assert.equal(views.at(-1).state, 'error');
+  assert.match(views.at(-1).detail, /did not switch/);
+  assert.equal(context.state, 'running');
+  assert.equal(originalGainOf(context).gain.value, 0);
+});
+
+test('the live delay does not add baseLatency, which Chrome already counts in outputLatency', () => {
+  assert.equal(
+    liveDetail({ model: 'dpdfnet4', latencySamples: 3165, sampleRate: 48000, outputLatency: 0.032, baseLatency: 0.0053 }),
+    'live, DPDFNet-4, 98 ms delay',
+  );
 });
