@@ -92,6 +92,7 @@ function setup({
   createContext = null,
   model = 'dpdfnet4',
   isPinned = false,
+  onTooSlowAtStart,
   switchTimeoutMs,
 } = {}) {
   const context = fakeContext();
@@ -131,6 +132,7 @@ function setup({
       });
     },
     onChange: (view) => views.push(view),
+    onTooSlowAtStart,
     switchTimeoutMs,
   });
   return {
@@ -163,6 +165,11 @@ const UA = {
     'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Mobile Safari/537.36',
   firefoxMac: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:144.0) Gecko/20100101 Firefox/144.0',
   firefoxAndroid: 'Mozilla/5.0 (Android 15; Mobile; rv:144.0) Gecko/144.0 Firefox/144.0',
+  chromeAndroidTablet:
+    'Mozilla/5.0 (Linux; Android 14; SM-X710) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36',
+  chromeWindows: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36',
+  firefoxWindows: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:144.0) Gecko/20100101 Firefox/144.0',
+  firefoxMobileNoAndroid: 'Mozilla/5.0 (Mobile; rv:144.0) Gecko/144.0 Firefox/144.0',
   safariIphone:
     'Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.6 Mobile/15E148 Safari/604.1',
 };
@@ -175,9 +182,20 @@ test('mode selection uses read-ahead on Safari and live on desktop Chrome and Fi
   assert.equal(mode('', undefined), 'live');
 });
 
-test('mode selection uses read-ahead on Firefox for Android but live on Chrome for Android', () => {
+test('mode selection uses read-ahead on Firefox for Android', () => {
   assert.equal(mode('', UA.firefoxAndroid), 'read-ahead');
-  assert.equal(mode('Google Inc.', UA.chromeAndroid), 'live');
+});
+
+test('mode selection uses read-ahead on phones and tablets', () => {
+  assert.equal(mode('Google Inc.', UA.chromeAndroid, { maxTouchPoints: 5 }), 'read-ahead');
+  assert.equal(mode('Google Inc.', UA.chromeAndroidTablet, { maxTouchPoints: 5 }), 'read-ahead');
+  assert.equal(mode('Google Inc.', UA.chromeMac, { maxTouchPoints: 5, isMobile: true }), 'read-ahead');
+  assert.equal(mode('', UA.firefoxMobileNoAndroid), 'read-ahead');
+});
+
+test('mode selection keeps live on desktops with a touch screen', () => {
+  assert.equal(mode('Google Inc.', UA.chromeWindows, { maxTouchPoints: 10, isMobile: false }), 'live');
+  assert.equal(mode('', UA.firefoxWindows, { maxTouchPoints: 10 }), 'live');
 });
 
 test('the localhost override also applies on Firefox for Android', () => {
@@ -861,6 +879,42 @@ test('the next worklet starts from the model the last one settled on', async () 
   filter.setEnabled(true, video);
   await ready();
   assert.deepEqual(preparations.at(-1), { lastModel: 'dpdfnet2' });
+});
+
+test('too slow at start hands the context and the muted originals to read-ahead', async () => {
+  const handovers = [];
+  const { context, filter, views } = setup({
+    failToCreate: tooSlowError({ dpdfnet4: 3, dpdfnet2: 2.5 }),
+    onTooSlowAtStart: (handover) => handovers.push(handover),
+  });
+  const video = new FakeVideo();
+  filter.setEnabled(true, video, [video]);
+  const viewsBefore = views.length;
+  await flush();
+
+  assert.equal(handovers.length, 1);
+  assert.equal(handovers[0].context, context);
+  assert.deepEqual(handovers[0].videos, [video]);
+  assert.equal(originalGainOf(context).gain.value, 0, 'the original stays muted through the handover');
+  assert.equal(context.state, 'running');
+  assert.equal(filter.isEnabled, false);
+  assert.ok(views.slice(viewsBefore).every((view) => view.state !== 'too-slow' && view.state !== 'off'));
+
+  const viewsAtHandover = views.length;
+  const control = handovers[0].originals.attach(video, context, { level: 0 });
+  assert.equal(context.sources.size, 1, 'read-ahead reuses the element source');
+  filter.refresh();
+  filter.attach(video, [video]);
+  await flush();
+  assert.equal(control.currentLevel(), 0);
+  assert.equal(views.length, viewsAtHandover, 'the live filter stops updating the panel');
+});
+
+test('too slow at start still mutes with the message when nothing takes over', async () => {
+  const { filter, views } = setup({ failToCreate: tooSlowError({ dpdfnet4: 3, dpdfnet2: 2.5 }) });
+  filter.setEnabled(true, new FakeVideo());
+  await flush();
+  assert.equal(views.at(-1).state, 'too-slow');
 });
 
 test('a first worklet loads both models and starts from DPDFNet-4', () => {

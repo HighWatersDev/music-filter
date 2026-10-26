@@ -10,6 +10,9 @@ const TAP_CONNECT = 'music-filter:tap-connect';
 const SOURCE_ATTRIBUTE = 'data-mf-media-source';
 const TICK_MS = 250;
 const RETAINED_BYTES = 16 * 1024 * 1024;
+// Live mode keeps a little of the current stream so read-ahead can take over if live turns out too slow.
+// YouTube buffers one to two minutes ahead, about 2.4 MB of Opus at 160 kbit/s.
+const LIVE_RETAINED_BYTES = 4 * 1024 * 1024;
 const MAX_STREAMS = 4;
 const OUTPUT_SAMPLE_RATE = 48000;
 const REPLAY_INTERVAL_MS = 5000;
@@ -21,7 +24,7 @@ const MODEL = isLocalTest ? 'fake' : 'dpdfnet4';
 
 const streams = new Map();
 const objectUrls = new Map();
-const originals = createOriginalAudioRegistry({ mode: isSafari ? 'mute' : 'graph', readPlayerVolume });
+let originals = createOriginalAudioRegistry({ mode: isSafari ? 'mute' : 'graph', readPlayerVolume });
 const fallbackMutes = createOriginalAudioRegistry({ mode: 'mute' });
 let separator;
 let separatorFailure = null;
@@ -37,21 +40,45 @@ let detail = '';
 let heldSince = null;
 let playRequestedAt = null;
 let tappedPlayerVolume = null;
+let retainedLimit = RETAINED_BYTES;
 
 let panel;
 
 const filterMode = selectFilterMode({
   vendor: navigator.vendor,
   userAgent: navigator.userAgent,
+  maxTouchPoints: navigator.maxTouchPoints,
+  isMobile: navigator.userAgentData?.mobile,
   hostname: location.hostname,
   override: readModeOverride(),
 });
+connectTap();
 if (filterMode === 'live') {
-  startLiveFilter();
+  retainedLimit = LIVE_RETAINED_BYTES;
+  startLiveFilter({ onTooSlowAtStart: takeOverFromLive });
 } else {
-  panel = createPanel({ onToggle: (on) => setEnabled(on).catch((error) => failClosed(error.message)) });
-  connectTap();
+  startReadAhead(createPanel({ onToggle: toggle }));
+}
+
+function toggle(on) {
+  setEnabled(on).catch((error) => failClosed(error.message));
+}
+
+function startReadAhead(readAheadPanel) {
+  retainedLimit = RETAINED_BYTES;
+  panel = readAheadPanel;
   setInterval(safeTick, TICK_MS);
+}
+
+// An element feeds only one MediaElementSource for its lifetime, so read-ahead keeps the live
+// filter's context and routing instead of creating its own. The originals stay at level 0 throughout.
+function takeOverFromLive({ context: liveContext, originals: liveOriginals, panel: livePanel }) {
+  context = liveContext;
+  originals = liveOriginals;
+  livePanel.update({ mode: 'read-ahead' });
+  startReadAhead(livePanel);
+  toggle(true);
+  return toggle;
 }
 
 function readModeOverride() {
@@ -120,7 +147,7 @@ function retain(stream, bytes) {
   if (!isEnabled && stream !== currentStream()) return;
   stream.chunks.push(bytes);
   stream.retainedBytes += bytes.byteLength;
-  while (stream.retainedBytes > RETAINED_BYTES) stream.retainedBytes -= stream.chunks.shift().byteLength;
+  while (stream.retainedBytes > retainedLimit) stream.retainedBytes -= stream.chunks.shift().byteLength;
 }
 
 function trimInactiveStreams() {

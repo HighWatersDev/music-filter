@@ -23,12 +23,14 @@ const SAMPLE_RATE = 48000;
 const READY_TIMEOUT_MS = 10000;
 const SWITCH_TIMEOUT_MS = 10000;
 const TICK_MS = 250;
-const TAP_CONNECT = 'music-filter:tap-connect';
 
-export function selectFilterMode({ vendor, userAgent = '', hostname, override }) {
+// A touch screen alone is not enough: Windows laptops have one and handle live filtering.
+export function selectFilterMode({ vendor, userAgent = '', maxTouchPoints = 0, isMobile = false, hostname, override }) {
   if (hostname === 'localhost' && MODES.has(override)) return override;
   if (vendor === SAFARI_VENDOR) return 'read-ahead';
-  if (userAgent.includes('Android') && userAgent.includes('Firefox')) return 'read-ahead';
+  const isFirefox = userAgent.includes('Firefox/');
+  if (isFirefox && (userAgent.includes('Android') || userAgent.includes('Mobile'))) return 'read-ahead';
+  if (maxTouchPoints > 0 && (isMobile || /Mobi|Android/.test(userAgent))) return 'read-ahead';
   return 'live';
 }
 
@@ -142,6 +144,7 @@ export function createLiveFilter({
   prepareFilter = async () => null,
   createFilterNode,
   onChange,
+  onTooSlowAtStart = null,
   switchTimeoutMs = SWITCH_TIMEOUT_MS,
 }) {
   const sources = new WeakMap();
@@ -156,6 +159,7 @@ export function createLiveFilter({
   let isOverloaded = false;
   let isSwitching = false;
   let isTooSlow = false;
+  let isHandedOver = false;
   let pendingFilter = null;
   let filter = null;
   let lastModel = null;
@@ -217,6 +221,10 @@ export function createLiveFilter({
           if (pending !== pendingFilter) return;
           pendingFilter = null;
           if (error?.isTooSlow) {
+            if (onTooSlowAtStart && isEnabled) {
+              handOver();
+              return;
+            }
             isTooSlow = true;
             sync();
             return;
@@ -225,6 +233,15 @@ export function createLiveFilter({
         },
       );
     pendingFilter = pending;
+  }
+
+  function handOver() {
+    isHandedOver = true;
+    isEnabled = false;
+    const videos = [...controls.keys()];
+    controls.clear();
+    main = null;
+    onTooSlowAtStart({ context, originals: registry, videos });
   }
 
   function engineInfo({ model, isPinned = false, wasmSource, latencySamples, warmupMs, heldModels, wasmMemoryBytes }) {
@@ -338,6 +355,7 @@ export function createLiveFilter({
   }
 
   function sync() {
+    if (isHandedOver) return;
     const video = isEnabled ? pickFeedVideo({ main, videos: [...controls.keys()] }) : null;
     const source = video ? sources.get(video) ?? null : null;
     const wanted = filter ? source : null;
@@ -587,12 +605,6 @@ function createExtensionFilterNode(context, onMessage, { wasm, models, options }
   return waitForReady(node, onMessage);
 }
 
-function releaseTapQueue() {
-  const channel = new MessageChannel();
-  channel.port1.onmessage = () => {};
-  window.postMessage({ type: TAP_CONNECT }, '*', [channel.port2]);
-}
-
 function pickVideo() {
   return document.querySelector('#movie_player video.html5-main-video') ?? document.querySelector('video');
 }
@@ -614,15 +626,20 @@ function readModelOverride() {
   }
 }
 
-export function startLiveFilter() {
-  releaseTapQueue();
+export function startLiveFilter({ onTooSlowAtStart = null } = {}) {
   let panel;
+  let handOverToggle = null;
   const pinnedModel = modelOverride({ hostname: location.hostname, override: readModelOverride() });
   const filter = createLiveFilter({
     createContext: () => new AudioContext({ sampleRate: SAMPLE_RATE, latencyHint: 'interactive' }),
     prepareFilter: (context, request) => prepareExtensionFilter(context, request, pinnedModel),
     createFilterNode: createExtensionFilterNode,
     onChange: (view) => panel?.update(view),
+    onTooSlowAtStart:
+      onTooSlowAtStart &&
+      ((handover) => {
+        handOverToggle = onTooSlowAtStart({ ...handover, panel });
+      }),
   });
   const tick = () => {
     if (!filter.isEnabled) return;
@@ -637,6 +654,10 @@ export function startLiveFilter() {
   panel = createPanel({
     mode: 'live',
     onToggle: (on) => {
+      if (handOverToggle) {
+        handOverToggle(on);
+        return;
+      }
       try {
         filter.setEnabled(on, pickVideo(), allVideos());
       } catch (error) {
