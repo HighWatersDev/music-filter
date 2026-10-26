@@ -65,9 +65,9 @@ export function createDownsampler() {
   let phase = 0;
   return {
     delay: HALF_LENGTH / FACTOR,
-    process(input, output) {
+    process(input, output, start = 0, end = input.length) {
       let written = 0;
-      for (let i = 0; i < input.length; i++) {
+      for (let i = start; i < end; i++) {
         history.push(input[i]);
         if (phase === 0) output[written++] = history.dot(taps);
         phase = phase + 1 === FACTOR ? 0 : phase + 1;

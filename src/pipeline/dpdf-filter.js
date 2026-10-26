@@ -63,7 +63,7 @@ export function createDpdfFilter({ engine, engineDelay = DPDF_ENGINE_DELAY }) {
     process(input, output) {
       for (let start = 0; start < input.length; start += INPUT_HOP) {
         const end = Math.min(start + INPUT_HOP, input.length);
-        const count = down.process(input.subarray(start, end), low);
+        const count = down.process(input, low, start, end);
         for (let i = 0; i < count; i++) {
           hopIn[hopFill++] = low[i];
           if (hopFill < DPDF_HOP) continue;

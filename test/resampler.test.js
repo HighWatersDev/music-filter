@@ -169,3 +169,19 @@ test('reset makes a resampler behave like a new one', () => {
   assert.equal(up.process(second, upOut), 9000);
   assert.deepEqual(upOut, upsample(second));
 });
+
+test('the downsampler can read a range of its input without a subarray', () => {
+  const input = Float32Array.from({ length: 1440 }, (_, i) => Math.sin(i / 7));
+  const viaRange = createDownsampler();
+  const viaSubarray = createDownsampler();
+  const ranged = new Float32Array(480);
+  const sliced = new Float32Array(480);
+  let rangedCount = 0;
+  let slicedCount = 0;
+  for (const [start, end] of [[0, 128], [128, 608], [608, 1000], [1000, 1440]]) {
+    rangedCount += viaRange.process(input, ranged.subarray(rangedCount), start, end);
+    slicedCount += viaSubarray.process(input.subarray(start, end), sliced.subarray(slicedCount));
+  }
+  assert.equal(rangedCount, slicedCount);
+  assert.deepEqual(ranged, sliced);
+});
