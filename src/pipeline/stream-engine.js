@@ -15,7 +15,10 @@ export const DEFAULT_CONFIG = {
   maxStartGapSeconds: 0.5,
   keepBehindSeconds: 30,
   keepAheadSeconds: 90,
-  warmUpBeforeSeconds: 2,
+  // tools/listen/engine-check.mjs on synth-6db-original.wav (2026-10-26): every join with audio in it
+  // stayed at -21.6 dB or better with 1 s (-22.1 dB with 2 s, -19.0 dB with 0.25 s), and the compute RTF
+  // fell from 0.268 to 0.252. The join at 19 s sits near -17 dB whatever the context length.
+  warmUpBeforeSeconds: 1,
   starvedRearmSeconds: 1,
 };
 

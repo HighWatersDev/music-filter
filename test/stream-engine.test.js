@@ -347,7 +347,7 @@ test('a continuing window gets up to 2 s of the decoded audio before it as conte
     calls.push({ left, options });
     return [left, right];
   };
-  const { engine } = startEngine({ separate: capture, config: { windowSeconds: 4 } });
+  const { engine } = startEngine({ separate: capture, config: { windowSeconds: 4, warmUpBeforeSeconds: 2 } });
   engine.pushChunk(bytes);
   engine.setPlayhead(0, true);
   await settle(engine);
@@ -373,7 +373,7 @@ test('context bridges a tiny hole with silence and stops at a larger one', async
       contexts.push(options.contextBefore);
       return [left, right];
     };
-    const { engine } = startEngine({ separate: capture });
+    const { engine } = startEngine({ separate: capture, config: { warmUpBeforeSeconds: 2 } });
     engine.timeline.write(0, ones(holeStart));
     engine.timeline.write(holeStart + holeLength, ones(60 * S - holeStart - holeLength));
     engine.processed = [[0, 5 * S]];
@@ -392,6 +392,20 @@ test('context bridges a tiny hole with silence and stops at a larger one', async
   const [cutLeft] = await contextFor(2.5 * S, 1 * S);
   assert.equal(cutLeft.length, 0.5 * S);
   assert.ok(cutLeft.every((sample) => sample === 1));
+});
+
+test('by default a window warms up on 1 s of the audio before it', async () => {
+  const S = 48000;
+  const contexts = [];
+  const capture = async (left, right, rate, options) => {
+    contexts.push(options.contextBefore[0].length);
+    return [left, right];
+  };
+  const { engine } = startEngine({ separate: capture, config: { windowSeconds: 4 } });
+  engine.pushChunk(bytes);
+  engine.setPlayhead(0, true);
+  await settle(engine);
+  assert.deepEqual(contexts.slice(0, 4), [0, 1 * S, 1 * S, 1 * S]);
 });
 
 test('warmUpBeforeSeconds of 0 passes no context', async () => {

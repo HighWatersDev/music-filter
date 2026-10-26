@@ -13,11 +13,15 @@ const LAG_SEARCH = 2400;
 const LAG_PROBE_SECONDS = 5;
 const repoPath = (relative) => fileURLToPath(new URL(`../../${relative}`, import.meta.url));
 
+const WARM_UP_FLAG = '--warm-up-before=';
+const args = process.argv.slice(2);
+const warmUpFlag = args.find((arg) => arg.startsWith(WARM_UP_FLAG));
+const warmUpBeforeSeconds = warmUpFlag ? Number(warmUpFlag.slice(WARM_UP_FLAG.length)) : undefined;
 const [
   input = repoPath('listening/synth-6db-original.wav'),
   reference = repoPath('listening/synth-6db-dpdfnet4-16.wav'),
   output = 'engine-check.wav',
-] = process.argv.slice(2);
+] = args.filter((arg) => arg !== warmUpFlag);
 
 const asset = (name) => readFileSync(repoPath(`extension/assets/${name}`));
 initSync({ module: asset('dpdf_bg.wasm') });
@@ -82,7 +86,12 @@ const stream = new StreamEngine({
       `window ${s.startSeconds.toFixed(2)} s +${s.durationSeconds.toFixed(2)} s: ${s.computeMs} ms, RTF ${rtf.toFixed(3)}`,
     );
   },
-  config: { lookaheadSeconds: 3600, urgencySeconds: 3600, keepAheadSeconds: 3600 },
+  config: {
+    lookaheadSeconds: 3600,
+    urgencySeconds: 3600,
+    keepAheadSeconds: 3600,
+    ...(warmUpBeforeSeconds !== undefined && { warmUpBeforeSeconds }),
+  },
 });
 stream.pushChunk(bytes);
 stream.setPlayhead(0, true);
@@ -126,7 +135,7 @@ const mean = (values) => values.reduce((a, b) => a + b, 0) / values.length;
 const rtfs = timings.map((t) => t.rtf);
 console.log(
   `\n${windows.length} windows, ${joins.length} joins. Compute RTF mean ${mean(rtfs).toFixed(3)}, max ${Math.max(...rtfs).toFixed(3)}` +
-    ` (includes the context warm-up). Reported delay ${dpdfFilter.delay} samples.`,
+    ` (includes the ${stream.config.warmUpBeforeSeconds} s context warm-up). Reported delay ${dpdfFilter.delay} samples.`,
 );
 
 const original = decodeMono(input);
