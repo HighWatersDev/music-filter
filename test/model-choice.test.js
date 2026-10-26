@@ -1,19 +1,20 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { judgeWarmup, selectModel, warmUp } from '../src/worklet/model-choice.js';
+import { WARMUP_SAMPLE_RATE, createWarmupSignal, judgeWarmup, selectModel, warmUp } from '../src/worklet/model-choice.js';
 
-test('DPDFNet-4 is kept when its warm-up mean is under 1.7 ms', () => {
-  assert.deepEqual(judgeWarmup('dpdfnet4', 1.69), { verdict: 'keep' });
+test('DPDFNet-4 is kept when its warm-up mean is under 2 ms', () => {
+  assert.deepEqual(judgeWarmup('dpdfnet4', 1.99), { verdict: 'keep' });
 });
 
-test('DPDFNet-4 at 1.7 ms or more falls back to DPDFNet-2', () => {
-  assert.deepEqual(judgeWarmup('dpdfnet4', 1.7), { verdict: 'fallback', next: 'dpdfnet2' });
-  assert.deepEqual(judgeWarmup('dpdfnet4', 2.16), { verdict: 'fallback', next: 'dpdfnet2' });
+test('DPDFNet-4 at 2 ms or more falls back to DPDFNet-2', () => {
+  assert.deepEqual(judgeWarmup('dpdfnet4', 2), { verdict: 'fallback', next: 'dpdfnet2' });
+  assert.deepEqual(judgeWarmup('dpdfnet4', 2.25), { verdict: 'fallback', next: 'dpdfnet2' });
 });
 
-test('DPDFNet-2 is kept under 2.2 ms and too slow at 2.2 ms or more', () => {
-  assert.deepEqual(judgeWarmup('dpdfnet2', 2.19), { verdict: 'keep' });
-  assert.deepEqual(judgeWarmup('dpdfnet2', 2.2), { verdict: 'too-slow' });
+test('DPDFNet-2 is kept under 1.6 ms and too slow at 1.6 ms or more', () => {
+  assert.deepEqual(judgeWarmup('dpdfnet2', 1.59), { verdict: 'keep' });
+  assert.deepEqual(judgeWarmup('dpdfnet2', 1.6), { verdict: 'too-slow' });
+  assert.deepEqual(judgeWarmup('dpdfnet2', 2.19), { verdict: 'too-slow' });
 });
 
 test('an unknown model is rejected', () => {
@@ -30,11 +31,12 @@ function fakeEngine(clock, model, costs, log) {
     model,
     hop: 160,
     hops: 0,
+    inputs: [],
     resets: 0,
     freed: false,
     processHop(input, output) {
       assert.equal(input.length, 160);
-      assert.ok(input.every((sample) => sample === 0), 'warm-up hops are silent');
+      engine.inputs.push(Float32Array.from(input));
       output.fill(0);
       clock.time += engine.hops === 0 ? 15 : costs[model];
       engine.hops++;
@@ -69,11 +71,13 @@ function choose(costs, from = 'dpdfnet4', isPinned = false) {
   return { result, log, engines };
 }
 
-test('warm-up runs 50 hops and averages the last 40', () => {
+test('warm-up runs 70 hops of the warm-up signal and averages the last 40', () => {
   const clock = fakeClock();
   const engine = fakeEngine(clock, 'dpdfnet4', { dpdfnet4: 2 }, []);
   assert.equal(warmUp(engine, clock), 2);
-  assert.equal(engine.hops, 50);
+  assert.equal(engine.hops, 70);
+  const signal = createWarmupSignal(160 * 70);
+  engine.inputs.forEach((input, hop) => assert.deepEqual(input, signal.subarray(hop * 160, (hop + 1) * 160)));
 });
 
 test('a fast device keeps DPDFNet-4, reset after warm-up', () => {
@@ -89,7 +93,7 @@ test('a slower device frees DPDFNet-4 and keeps DPDFNet-2, reset after its own w
   assert.equal(result.model, 'dpdfnet2');
   assert.equal(result.engine, engines[1]);
   assert.equal(engines[0].freed, true);
-  assert.equal(engines[1].hops, 50);
+  assert.equal(engines[1].hops, 70);
   assert.deepEqual(result.warmupMs, { dpdfnet4: 2.25, dpdfnet2: 1.375 });
   assert.deepEqual(log, ['create dpdfnet4', 'free dpdfnet4', 'create dpdfnet2', 'reset dpdfnet2']);
 });
@@ -134,4 +138,47 @@ test('an engine that throws during warm-up is freed and the error propagates', (
     /warm-up exploded/,
   );
   assert.deepEqual(freed, [true]);
+});
+
+const rms = (samples) => Math.sqrt(samples.reduce((total, x) => total + x * x, 0) / samples.length);
+const dbfs = (level) => 20 * Math.log10(level);
+
+function bandLevel(samples, frequency) {
+  let re = 0;
+  let im = 0;
+  for (let i = 0; i < samples.length; i++) {
+    const phase = (2 * Math.PI * frequency * i) / WARMUP_SAMPLE_RATE;
+    re += samples[i] * Math.cos(phase);
+    im += samples[i] * Math.sin(phase);
+  }
+  return Math.hypot(re, im) / samples.length;
+}
+
+test('the warm-up signal is deterministic', () => {
+  assert.deepEqual(createWarmupSignal(160 * 70), createWarmupSignal(160 * 70));
+});
+
+test('the warm-up signal sits at a typical programme level without clipping', () => {
+  const signal = createWarmupSignal(160 * 70);
+  assert.equal(signal.length, 160 * 70);
+  const level = dbfs(rms(signal));
+  assert.ok(level > -26 && level < -14, `level ${level.toFixed(1)} dBFS`);
+  assert.ok(signal.every((x) => Math.abs(x) < 0.9));
+});
+
+test('every warm-up hop carries sound, and the level moves like speech does', () => {
+  const signal = createWarmupSignal(160 * 70);
+  const hopLevels = [];
+  for (let start = 0; start < signal.length; start += 160) hopLevels.push(dbfs(rms(signal.subarray(start, start + 160))));
+  assert.ok(Math.min(...hopLevels) > -45, `quietest hop ${Math.min(...hopLevels).toFixed(1)} dBFS`);
+  assert.ok(Math.max(...hopLevels) - Math.min(...hopLevels) > 6, 'the envelope is flat');
+});
+
+test('the warm-up signal has tonal peaks over a noise floor across the band', () => {
+  const signal = createWarmupSignal(160 * 70);
+  const tonal = bandLevel(signal, 220);
+  const between = bandLevel(signal, 1234.5);
+  const high = bandLevel(signal, 6000);
+  assert.ok(tonal > 10 * between, `220 Hz ${tonal} vs 1234.5 Hz ${between}`);
+  assert.ok(between > 0 && high > 0, 'no broadband noise');
 });
