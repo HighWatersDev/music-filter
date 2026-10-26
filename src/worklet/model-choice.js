@@ -14,11 +14,14 @@ const FORMANTS = [
 ];
 const NOISE_LEVEL = 0.004;
 
-// The warm-up runs hops back to back, but playback runs one hop every 10 ms, which costs more
-// (headless Chrome, M2 Pro, 2026-10-26). Real-audio p99 reached 2.6x the warm-up mean on DPDFNet-4
-// and 3.3x on DPDFNet-2. Chrome renders two quanta (256 frames) per device callback, and only
-// hops longer than that underran. Each limit keeps the predicted p99 under two quanta.
-const MAX_MEAN_MS = { dpdfnet4: 2, dpdfnet2: 1.6 };
+// Playback runs one hop every 10 ms and costs more than the back-to-back warm-up. On an M2 Pro
+// (2026-10-26) the real-audio mean was 1.6x the warm-up for DPDFNet-4 and 2x for DPDFNet-2 in
+// Chrome, and 1.2x and 1.5x in Firefox. Chrome renders two quanta (256 frames) per device
+// callback, and only hops longer than that underran, so one-quantum overruns are not glitches.
+// Under 2 ms, DPDFNet-4's Chrome p99 (up to 2.6x the warm-up) stays under two quanta. DPDFNet-2
+// gets the same limit so Firefox on this machine (1.6 to 1.75 ms) is not called too slow. Its
+// Chrome mean stays under 4 ms and the overload monitor handles the rest.
+const MAX_MEAN_MS = { dpdfnet4: 2, dpdfnet2: 2 };
 const FALLBACK = { dpdfnet4: 'dpdfnet2' };
 
 export const isLiveModel = (model) => Object.hasOwn(MAX_MEAN_MS, model);

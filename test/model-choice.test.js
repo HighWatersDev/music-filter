@@ -11,9 +11,9 @@ test('DPDFNet-4 at 2 ms or more falls back to DPDFNet-2', () => {
   assert.deepEqual(judgeWarmup('dpdfnet4', 2.25), { verdict: 'fallback', next: 'dpdfnet2' });
 });
 
-test('DPDFNet-2 is kept under 1.6 ms and too slow at 1.6 ms or more', () => {
-  assert.deepEqual(judgeWarmup('dpdfnet2', 1.59), { verdict: 'keep' });
-  assert.deepEqual(judgeWarmup('dpdfnet2', 1.6), { verdict: 'too-slow' });
+test('DPDFNet-2 is kept under 2 ms and too slow at 2 ms or more', () => {
+  assert.deepEqual(judgeWarmup('dpdfnet2', 1.99), { verdict: 'keep' });
+  assert.deepEqual(judgeWarmup('dpdfnet2', 2), { verdict: 'too-slow' });
   assert.deepEqual(judgeWarmup('dpdfnet2', 2.19), { verdict: 'too-slow' });
 });
 
