@@ -1,6 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { WARMUP_SAMPLE_RATE, createWarmupSignal, judgeWarmup, selectModel, warmUp } from '../src/worklet/model-choice.js';
+import {
+  WARMUP_SAMPLE_RATE,
+  createWarmupSignal,
+  judgeWarmup,
+  selectModel,
+  switchTargets,
+  warmUp,
+} from '../src/worklet/model-choice.js';
 
 test('DPDFNet-4 is kept when its warm-up mean is under 2 ms', () => {
   assert.deepEqual(judgeWarmup('dpdfnet4', 1.99), { verdict: 'keep' });
@@ -181,4 +188,11 @@ test('the warm-up signal has tonal peaks over a noise floor across the band', ()
   const high = bandLevel(signal, 6000);
   assert.ok(tonal > 10 * between, `220 Hz ${tonal} vs 1234.5 Hz ${between}`);
   assert.ok(between > 0 && high > 0, 'no broadband noise');
+});
+
+test('only an unpinned DPDFNet-4 can still switch, and only to DPDFNet-2', () => {
+  assert.deepEqual(switchTargets('dpdfnet4', false), ['dpdfnet2']);
+  assert.deepEqual(switchTargets('dpdfnet4', true), []);
+  assert.deepEqual(switchTargets('dpdfnet2', false), []);
+  assert.deepEqual(switchTargets(null, false), []);
 });

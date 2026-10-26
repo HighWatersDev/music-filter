@@ -1,7 +1,8 @@
 import { createDpdfFilter } from '../pipeline/dpdf-filter.js';
 import { DelayLine } from './delay-line.js';
 import { FrameStats } from './frame-stats.js';
-import { isLiveModel, selectModel } from './model-choice.js';
+import { releaseBuffer } from './release-buffer.js';
+import { isLiveModel, selectModel, switchTargets } from './model-choice.js';
 
 const REPORT_EVERY_HOPS = 100;
 const RENDER_QUANTUM = 128;
@@ -39,17 +40,19 @@ export function defineMusicFilterProcessor({ Base, engines, sampleRate, clock })
       this.port.onmessage = ({ data }) => this.handleMessage(data);
 
       try {
-        const { wasm, models, failMode = 'silence', model: pinnedModel } = options.processorOptions;
+        const { wasm, models, failMode = 'silence', model: pinnedModel, from } = options.processorOptions;
         if (!FAIL_MODES.has(failMode)) throw new Error(`unknown failMode ${failMode}`);
         this.failMode = failMode;
-        if (pinnedModel !== undefined && !isLiveModel(pinnedModel)) throw new Error(`unknown live model ${pinnedModel}`);
+        for (const model of [pinnedModel, from]) {
+          if (model !== undefined && !isLiveModel(model)) throw new Error(`unknown live model ${model}`);
+        }
         this.isPinned = pinnedModel !== undefined;
         if (sampleRate !== FILTER_SAMPLE_RATE) {
           throw new Error(`expected a ${FILTER_SAMPLE_RATE} Hz audio context, got ${sampleRate}`);
         }
-        this.models = models ?? {};
+        this.models = { ...models };
         engines.init(wasm);
-        const choice = this.choose(pinnedModel ?? FIRST_MODEL);
+        const choice = this.choose(pinnedModel ?? from ?? FIRST_MODEL);
         if (!choice) return;
         this.port.postMessage({
           type: 'ready',
@@ -61,6 +64,8 @@ export function defineMusicFilterProcessor({ Base, engines, sampleRate, clock })
           clock: clock.name,
           failMode,
           latencySamples: this.filter.delay,
+          heldModels: Object.keys(this.models),
+          wasmMemoryBytes: engines.memoryBytes?.(),
         });
       } catch (error) {
         this.releaseEngine();
@@ -75,12 +80,21 @@ export function defineMusicFilterProcessor({ Base, engines, sampleRate, clock })
         createEngine: (name) => this.createEngine(name),
         clock,
       });
+      this.releaseModelBytes(choice.engine ? switchTargets(choice.model, this.isPinned) : []);
       if (!choice.engine) {
         this.port.postMessage({ type: 'too-slow', warmupMs: choice.warmupMs });
         return null;
       }
       this.useEngine(choice);
       return choice;
+    }
+
+    releaseModelBytes(keep) {
+      for (const model of Object.keys(this.models)) {
+        if (keep.includes(model)) continue;
+        releaseBuffer(this.models[model]);
+        delete this.models[model];
+      }
     }
 
     createEngine(model) {
@@ -124,6 +138,8 @@ export function defineMusicFilterProcessor({ Base, engines, sampleRate, clock })
           model: choice.model,
           warmupMs: choice.warmupMs,
           latencySamples: this.filter.delay,
+          heldModels: Object.keys(this.models),
+          wasmMemoryBytes: engines.memoryBytes?.(),
         });
       } catch (error) {
         this.engine = null;

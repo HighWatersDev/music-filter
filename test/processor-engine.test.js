@@ -150,3 +150,73 @@ test('hop timings are reported every 100 hops against a 10 ms budget', () => {
   assert.equal(stats.budgetMs, 10);
   assert.equal(stats.model, 'dpdfnet4');
 });
+
+test('after keeping DPDFNet-4 the processor holds only the DPDFNet-2 bytes it may switch to', () => {
+  const processor = createProcessor({ engines: fakeEngines(), failMode: 'silence' });
+  assert.deepEqual(messagesOf(processor, 'ready')[0].heldModels, ['dpdfnet2']);
+  assert.deepEqual(Object.keys(processor.models), ['dpdfnet2']);
+});
+
+test('after falling back to DPDFNet-2 the processor holds no model bytes', () => {
+  const processor = createProcessor({ engines: fakeEngines({ costs: SLOW_DPDFNET4 }), failMode: 'silence' });
+  assert.deepEqual(messagesOf(processor, 'ready')[0].heldModels, []);
+  assert.deepEqual(Object.keys(processor.models), []);
+});
+
+test('a pinned model holds no bytes for a switch it will never make', () => {
+  const processor = createProcessor({ engines: fakeEngines(), failMode: 'silence', options: { model: 'dpdfnet4' } });
+  assert.deepEqual(messagesOf(processor, 'ready')[0].heldModels, []);
+});
+
+test('a switch to DPDFNet-2 releases its bytes and says so', () => {
+  const processor = createProcessor({ engines: fakeEngines(), failMode: 'silence' });
+  send(processor, { type: 'use-model', model: 'dpdfnet2' });
+  assert.deepEqual(messagesOf(processor, 'model')[0].heldModels, []);
+  assert.deepEqual(Object.keys(processor.models), []);
+});
+
+test('too slow at start releases every model', () => {
+  const processor = createProcessor({ engines: fakeEngines({ costs: { dpdfnet4: 3, dpdfnet2: 2.5 } }), failMode: 'silence' });
+  assert.deepEqual(Object.keys(processor.models), []);
+});
+
+test('starting from DPDFNet-2 skips DPDFNet-4 without pinning, so it can still be too slow', () => {
+  const engines = fakeEngines({ costs: { dpdfnet4: 1, dpdfnet2: 2.5 } });
+  const processor = createProcessor({
+    engines,
+    failMode: 'silence',
+    options: { from: 'dpdfnet2', models: { dpdfnet2: new TextEncoder().encode('dpdfnet2').buffer } },
+  });
+  assert.deepEqual(engines.created.map((engine) => engine.model), ['dpdfnet2']);
+  assert.equal(messagesOf(processor, 'too-slow').length, 1);
+
+  const fine = createProcessor({
+    engines: fakeEngines(),
+    failMode: 'silence',
+    options: { from: 'dpdfnet2', models: { dpdfnet2: new TextEncoder().encode('dpdfnet2').buffer } },
+  });
+  const [ready] = messagesOf(fine, 'ready');
+  assert.equal(ready.model, 'dpdfnet2');
+  assert.equal(ready.isPinned, false);
+});
+
+test('an unknown start model fails init', () => {
+  const processor = createProcessor({ engines: fakeEngines(), failMode: 'silence', options: { from: 'dfn3' } });
+  assert.match(messagesOf(processor, 'error')[0].message, /dfn3/);
+});
+
+test('released model bytes are detached so they free at once instead of at the next garbage collection', () => {
+  const models = { dpdfnet4: new TextEncoder().encode('dpdfnet4').buffer, dpdfnet2: new TextEncoder().encode('dpdfnet2').buffer };
+  const processor = createProcessor({ engines: fakeEngines(), failMode: 'silence', options: { models } });
+  assert.equal(models.dpdfnet4.detached, true);
+  assert.equal(models.dpdfnet2.detached, false);
+  send(processor, { type: 'use-model', model: 'dpdfnet2' });
+  assert.equal(models.dpdfnet2.detached, true);
+});
+
+test('ready reports the size of the wasm memory', () => {
+  const engines = fakeEngines();
+  engines.memoryBytes = () => 4096;
+  const processor = createProcessor({ engines, failMode: 'silence' });
+  assert.equal(messagesOf(processor, 'ready')[0].wasmMemoryBytes, 4096);
+});

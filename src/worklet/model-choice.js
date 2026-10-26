@@ -26,6 +26,12 @@ const FALLBACK = { dpdfnet4: 'dpdfnet2' };
 
 export const isLiveModel = (model) => Object.hasOwn(MAX_MEAN_MS, model);
 
+export function switchTargets(model, isPinned) {
+  const targets = [];
+  for (let next = isPinned ? undefined : FALLBACK[model]; next; next = FALLBACK[next]) targets.push(next);
+  return targets;
+}
+
 export function judgeWarmup(model, meanMs) {
   if (!isLiveModel(model)) throw new Error(`unknown live model ${model}`);
   if (meanMs < MAX_MEAN_MS[model]) return { verdict: 'keep' };

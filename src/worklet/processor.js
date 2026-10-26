@@ -8,9 +8,13 @@ const clock =
     ? { name: 'performance.now', now: () => performance.now() }
     : { name: 'Date.now', now: () => Date.now() };
 
+let exports = null;
 const engines = {
-  init: (wasm) => dpdf.initSync({ module: wasm }),
+  init: (wasm) => {
+    exports = dpdf.initSync({ module: wasm });
+  },
   create: (modelBytes) => wrapDpdf(new dpdf.Dpdf(new Uint8Array(modelBytes))),
+  memoryBytes: () => exports?.memory.buffer.byteLength,
 };
 
 registerProcessor(
