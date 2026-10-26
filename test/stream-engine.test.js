@@ -20,6 +20,7 @@ function startEngine(options = {}) {
     config: options.config,
     enqueue: options.enqueue,
     playheadSeconds: options.playheadSeconds,
+    awaitingReplay: options.awaitingReplay,
   });
   return { engine, windows, statuses };
 }
@@ -593,4 +594,29 @@ test('a replay with the re-appended segment after the later one plays without st
   assert.deepEqual(starvedAt(statuses), []);
   assertContiguous(windows, 5, 40);
   assert.equal(engine.timeline.ranges.length, 1, JSON.stringify(engine.timeline.ranges));
+});
+
+test('an engine awaiting a replay reports no starvation for stale audio before the replay ends', async () => {
+  const config = { keepBehindSeconds: 2, keepAheadSeconds: 10 };
+  const { engine, windows, statuses } = startEngine({ config, playheadSeconds: 40, awaitingReplay: true });
+  engine.pushChunk(longInit);
+  engine.pushChunk(longClustersFrom(0, 5));
+  await settle(engine);
+  assert.deepEqual(starvedAt(statuses), []);
+  engine.pushChunk(longClustersFrom(7));
+  engine.endReplay();
+  await settle(engine);
+  assert.deepEqual(starvedAt(statuses), []);
+  assert.ok(Math.abs(windows[0].startSeconds - 40) < 0.001, `first window at ${windows[0]?.startSeconds} s`);
+});
+
+test('a replay that ends with no audio near the playhead reports starved once', async () => {
+  const config = { keepBehindSeconds: 2, keepAheadSeconds: 10 };
+  const { engine, statuses } = startEngine({ config, playheadSeconds: 40, awaitingReplay: true });
+  engine.pushChunk(longInit);
+  engine.pushChunk(longClustersFrom(0, 5));
+  engine.endReplay();
+  await settle(engine);
+  engine.setPlayhead(40, true);
+  assert.deepEqual(starvedAt(statuses), [40]);
 });

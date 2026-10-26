@@ -118,6 +118,7 @@ function handleTapEvent(event) {
       retainedBytes: 0,
       timestampOffset: 0,
       lastReplayAt: -Infinity,
+      resetId: 0,
     });
     for (const id of streams.keys()) {
       if (streams.size <= MAX_STREAMS) break;
@@ -208,7 +209,7 @@ function handleWorkerMessage(message, connection) {
   }
   if (message.type !== 'stream-status') return;
   if (message.stage === 'unsupported' || message.stage === 'error') fail(message.reason ?? message.message);
-  if (message.stage === 'starved') replay(message.streamId);
+  if (message.stage === 'starved') replay(message);
   if (message.stage === 'loading') detail = 'loading voice filter';
   if (message.stage === 'model') lighterModel = MODEL_LABELS[message.model] ?? message.model;
   if (message.stage === 'window') {
@@ -296,15 +297,20 @@ function activate(stream) {
 
 function sendRetained(stream) {
   const playheadSeconds = attachedVideo?.currentTime ?? 0;
-  send({ type: 'stream-reset', streamId: stream.streamId, mime: stream.mime, model: MODEL, playheadSeconds });
-  if (stream.init) sendChunk(stream.streamId, stream.init);
-  for (const chunk of stream.chunks) sendChunk(stream.streamId, chunk);
+  const { streamId } = stream;
+  stream.resetId += 1;
+  send({ type: 'stream-reset', streamId, resetId: stream.resetId, mime: stream.mime, model: MODEL, playheadSeconds });
+  if (stream.init) sendChunk(streamId, stream.init);
+  for (const chunk of stream.chunks) sendChunk(streamId, chunk);
+  send({ type: 'stream-replay-end', streamId });
 }
 
-function replay(streamId) {
+// The worker can run seconds behind while it filters a window, so a starved report from an engine that a
+// newer replay has already replaced would otherwise start yet another replay.
+function replay({ streamId, resetId }) {
   const stream = streams.get(streamId);
   const now = performance.now();
-  if (!stream || currentFailure() || now - stream.lastReplayAt < REPLAY_INTERVAL_MS) return;
+  if (!stream || resetId !== stream.resetId || currentFailure() || now - stream.lastReplayAt < REPLAY_INTERVAL_MS) return;
   stream.lastReplayAt = now;
   detail = 'reloading audio';
   sendRetained(stream);

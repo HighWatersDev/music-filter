@@ -154,7 +154,7 @@ async function runSeparation({ id, model, device: requestedDevice, sampleRate, l
   );
 }
 
-const STREAM_MESSAGES = new Set(['stream-reset', 'stream-chunk', 'stream-abort', 'playhead']);
+const STREAM_MESSAGES = new Set(['stream-reset', 'stream-chunk', 'stream-replay-end', 'stream-abort', 'playhead']);
 const DPDF_WASM_URL = new URL('../assets/dpdf_bg.wasm', import.meta.url);
 const DPDF_MODEL_URLS = {
   dpdfnet4: new URL('../assets/dpdfnet4.onnx', import.meta.url),
@@ -207,7 +207,7 @@ function createWindowFilter(model, streamId) {
 
 function handleStream(data) {
   if (data.type === 'stream-reset') {
-    const { streamId, model, playheadSeconds = 0 } = data;
+    const { streamId, resetId, model, playheadSeconds = 0 } = data;
     stream?.engine.reset();
     stream = {
       id: streamId,
@@ -215,11 +215,12 @@ function handleStream(data) {
         separate: createWindowFilter(model, streamId),
         enqueue: enqueueSeparation,
         playheadSeconds,
+        awaitingReplay: true,
         onWindow: (window) => {
           const transfer = [...new Set([window.left.buffer, window.right.buffer])];
           post({ type: 'window', streamId, ...window }, transfer);
         },
-        onStatus: (status) => post({ type: 'stream-status', streamId, ...status }),
+        onStatus: (status) => post({ type: 'stream-status', streamId, resetId, ...status }),
         onWarning: (message) => post({ type: 'stream-status', streamId, stage: 'warning', message }),
       }),
     };
@@ -227,6 +228,7 @@ function handleStream(data) {
   }
   if (!stream || data.streamId !== stream.id) return;
   if (data.type === 'stream-chunk') stream.engine.pushChunk(new Uint8Array(data.bytes));
+  if (data.type === 'stream-replay-end') stream.engine.endReplay();
   if (data.type === 'stream-abort') stream.engine.abort();
   if (data.type === 'playhead') stream.engine.setPlayhead(data.seconds, data.isPlaying);
 }

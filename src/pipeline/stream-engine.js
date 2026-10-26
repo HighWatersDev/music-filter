@@ -81,6 +81,7 @@ export class StreamEngine {
     config = {},
     enqueue = createSerialQueue(),
     playheadSeconds = 0,
+    awaitingReplay = false,
   }) {
     this.separate = separate;
     this.enqueue = enqueue;
@@ -91,6 +92,7 @@ export class StreamEngine {
     this.generation = 0;
     this.reset();
     this.playhead = Math.max(0, Math.round(playheadSeconds * this.config.sampleRate));
+    this.awaitingReplay = awaitingReplay;
   }
 
   reset() {
@@ -113,6 +115,14 @@ export class StreamEngine {
     this.ready = Promise.resolve();
     this.hasSeenAudio = false;
     this.starvedAt = null;
+    this.awaitingReplay = false;
+  }
+
+  // A replay sends the retained bytes oldest first, so until the last of them arrives the audio near the
+  // playhead may simply not have been pushed yet.
+  endReplay() {
+    this.awaitingReplay = false;
+    this.pump();
   }
 
   pushChunk(bytes) {
@@ -313,7 +323,7 @@ export class StreamEngine {
   }
 
   reportIfStarved() {
-    if (!this.hasSeenAudio || this.hasPendingDecode()) return;
+    if (this.awaitingReplay || !this.hasSeenAudio || this.hasPendingDecode()) return;
     const { sampleRate: rate, starvedRearmSeconds } = this.config;
     if (this.starvedAt !== null && Math.abs(this.playhead - this.starvedAt) <= starvedRearmSeconds * rate) return;
     const starved = isStarved({

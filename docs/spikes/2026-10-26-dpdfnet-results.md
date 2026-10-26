@@ -39,9 +39,25 @@ The user listened to live mode in Chrome on desktop: **"this sounds much cleaner
 | Safari (iPhone, iPad, Mac) | Read-ahead | DPDFNet-4, DPDFNet-2 if the first window runs slower than RTF 0.6 |
 | Phones and tablets in other browsers (Firefox Android, Chrome Android) | Read-ahead | Same |
 
+## iPhone simulator, read-ahead with DPDFNet-4
+
+| Check | Result |
+|---|---|
+| Loading | `dpdf_bg.wasm` and `dpdfnet4.onnx` load in Safari's extension Worker. No CSP errors. |
+| Speed | 10 s windows in 2.4 to 2.8 s on the Mac CPU. The DPDFNet-2 switch never triggered. |
+| 3 min playback, speech and Big Buck Bunny | Always filtered, no holds after the start |
+| Ads | Filtered. YouTube unmutes on each source swap and the extension re-mutes in the same event turn. |
+| Seek back 15 s, 1.5x mute, toggle off | Correct |
+| Seek forward 60 s, before the fix | Reload loop: 24 replays in 4 min, 31% of samples held |
+| Seek forward 60 s, after the fix | 1 replay and 1 hold per seek (1.2 s and 2.0 s), 0.4% and 1.8% of samples held |
+
+The loop had two causes. A replay resends the retained bytes oldest first, and the engine reported "starved" after the first stale chunks, before the audio near the playhead arrived. The worker also runs up to 10 s behind while it filters back-to-back windows, so a starved report from a replaced engine could start another replay. Now each replay ends with a `stream-replay-end` marker, the engine stays quiet until it arrives, and the content script ignores starved reports whose `resetId` is not the latest.
+
 ## Still open
 
-- iPhone simulator check of read-ahead with DPDFNet (last checked with DeepFilterNet3).
 - Real iPhone and real Android phone: speed and behaviour.
+- The worker's message lag (p95 5.4 s on the simulator) comes from filtering a whole window without yielding. Only the 5 s replay throttle stops a starved report at the end of a replay from starting another one.
+- The panel names no model in read-ahead until a drop to DPDFNet-2.
+- A pointless replay fires when a video ends.
 - Sung vocals still come through. That needs v1.1 work (fine-tune, or a speech-vs-singing gate).
 - Store packaging: icons, listing, privacy text.
