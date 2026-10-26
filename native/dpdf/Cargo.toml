@@ -1,0 +1,26 @@
+[package]
+name = "dpdf"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+tract-onnx = { version = "=0.23.8", default-features = false, features = ["getrandom-js"] }
+rustfft = { version = "=6.2.0", default-features = false }
+wasm-bindgen = "=0.2.129"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false

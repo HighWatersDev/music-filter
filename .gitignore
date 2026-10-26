@@ -10,3 +10,6 @@ build/
 test-page/fixtures/
 .playwright/
 tools/listen/*.wav
+native/dpdf/target/
+vendor/dpdf/*
+!vendor/dpdf/SOURCE
