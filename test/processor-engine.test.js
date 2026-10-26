@@ -54,6 +54,33 @@ test('a device too slow for DPDFNet-2 reports too-slow instead of ready and stay
   assert.ok(render(processor, 60).every((sample) => sample === 0));
 });
 
+test('a pinned model runs without a fallback and the ready message says it is pinned', () => {
+  const engines = fakeEngines({ costs: { dpdfnet4: 3, dpdfnet2: 2.5 } });
+  const processor = createProcessor({ engines, failMode: 'silence', options: { model: 'dpdfnet4' } });
+  const [ready] = messagesOf(processor, 'ready');
+  assert.equal(ready.model, 'dpdfnet4');
+  assert.equal(ready.isPinned, true);
+  assert.deepEqual(engines.created.map((engine) => engine.model), ['dpdfnet4']);
+  assert.ok(render(processor, 60).slice(-BLOCK).every(isProcessed));
+});
+
+test('pinning DPDFNet-2 never creates DPDFNet-4', () => {
+  const engines = fakeEngines();
+  const processor = createProcessor({ engines, failMode: 'silence', options: { model: 'dpdfnet2' } });
+  assert.equal(messagesOf(processor, 'ready')[0].model, 'dpdfnet2');
+  assert.deepEqual(engines.created.map((engine) => engine.model), ['dpdfnet2']);
+});
+
+test('an unpinned start says so in the ready message', () => {
+  const processor = createProcessor({ engines: fakeEngines(), failMode: 'silence' });
+  assert.equal(messagesOf(processor, 'ready')[0].isPinned, false);
+});
+
+test('an unknown pinned model fails init', () => {
+  const processor = createProcessor({ engines: fakeEngines(), failMode: 'silence', options: { model: 'dfn3' } });
+  assert.match(messagesOf(processor, 'error')[0].message, /dfn3/);
+});
+
 test('missing model bytes fail init', () => {
   const processor = createProcessor({ failMode: 'silence', options: { models: {} } });
   assert.match(messagesOf(processor, 'error')[0].message, /dpdfnet4/);

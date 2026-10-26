@@ -30,9 +30,13 @@ export function selectFilterMode({ vendor, userAgent = '', hostname, override })
   return 'live';
 }
 
-export function overloadAction({ model, isOverloaded }) {
+export function modelOverride({ hostname, override }) {
+  return hostname === 'localhost' && Object.hasOwn(MODEL_LABELS, override) ? override : null;
+}
+
+export function overloadAction({ model, isPinned = false, isOverloaded }) {
   if (!isOverloaded) return 'none';
-  return model === FALLBACK_MODEL ? 'too-slow' : 'switch';
+  return model === FALLBACK_MODEL || isPinned ? 'too-slow' : 'switch';
 }
 
 export function liveDetail({ model, latencySamples, sampleRate, outputLatency }) {
@@ -186,8 +190,8 @@ export function createLiveFilter({ createContext, createFilterNode, onChange }) 
     pendingFilter = pending;
   }
 
-  function engineInfo({ model, latencySamples, warmupMs }) {
-    return { model, latencySamples, warmupMs };
+  function engineInfo({ model, isPinned = false, latencySamples, warmupMs }) {
+    return { model, isPinned, latencySamples, warmupMs };
   }
 
   function handleMessage(message, pending) {
@@ -206,7 +210,7 @@ export function createLiveFilter({ createContext, createFilterNode, onChange }) 
       return;
     }
     if (message.type === 'model') {
-      filter.engine = engineInfo(message);
+      filter.engine = engineInfo({ ...message, isPinned: filter.engine.isPinned });
       isSwitching = false;
       isOverloaded = false;
       overload.reset();
@@ -220,7 +224,8 @@ export function createLiveFilter({ createContext, createFilterNode, onChange }) 
   }
 
   function recordLoad(message) {
-    const action = overloadAction({ model: filter.engine.model, isOverloaded: overload.record(message) });
+    const { model, isPinned } = filter.engine;
+    const action = overloadAction({ model, isPinned, isOverloaded: overload.record(message) });
     isOverloaded = action === 'too-slow';
     if (action !== 'switch') return;
     overload.reset();
@@ -469,7 +474,7 @@ function toPageObject(value) {
   return typeof cloneInto === 'function' ? cloneInto(value, window) : value;
 }
 
-async function createExtensionFilterNode(context, onMessage) {
+async function createExtensionFilterNode(context, onMessage, pinnedModel) {
   const [[wasm, dpdfnet4, dpdfnet2]] = await Promise.all([loadAssets(), addProcessorModule(context)]);
   const node = createWithWasmFallback(
     (compiledOrBytes) =>
@@ -479,7 +484,12 @@ async function createExtensionFilterNode(context, onMessage) {
         channelCount: 2,
         channelCountMode: 'explicit',
         outputChannelCount: [2],
-        processorOptions: toPageObject({ wasm: compiledOrBytes, models: { dpdfnet4, dpdfnet2 }, failMode: 'silence' }),
+        processorOptions: toPageObject({
+          wasm: compiledOrBytes,
+          models: { dpdfnet4, dpdfnet2 },
+          failMode: 'silence',
+          ...(pinnedModel && { model: pinnedModel }),
+        }),
       }),
     wasm,
   );
@@ -505,12 +515,21 @@ function addsVideo({ addedNodes }) {
   return false;
 }
 
+function readModelOverride() {
+  try {
+    return localStorage.getItem('mf_model');
+  } catch {
+    return null;
+  }
+}
+
 export function startLiveFilter() {
   releaseTapQueue();
   let panel;
+  const pinnedModel = modelOverride({ hostname: location.hostname, override: readModelOverride() });
   const filter = createLiveFilter({
     createContext: () => new AudioContext({ sampleRate: SAMPLE_RATE, latencyHint: 'interactive' }),
-    createFilterNode: createExtensionFilterNode,
+    createFilterNode: (context, onMessage) => createExtensionFilterNode(context, onMessage, pinnedModel),
     onChange: (view) => panel?.update(view),
   });
   const tick = () => {

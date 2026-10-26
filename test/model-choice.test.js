@@ -51,12 +51,13 @@ function fakeEngine(clock, model, costs, log) {
   return engine;
 }
 
-function choose(costs, from = 'dpdfnet4') {
+function choose(costs, from = 'dpdfnet4', isPinned = false) {
   const clock = fakeClock();
   const log = [];
   const engines = [];
   const result = selectModel({
     from,
+    isPinned,
     clock,
     createEngine: (model) => {
       log.push(`create ${model}`);
@@ -105,6 +106,13 @@ test('a switch starts the choice at DPDFNet-2', () => {
   const { result, log } = choose({ dpdfnet4: 1, dpdfnet2: 1 }, 'dpdfnet2');
   assert.equal(result.model, 'dpdfnet2');
   assert.deepEqual(log, ['create dpdfnet2', 'reset dpdfnet2']);
+});
+
+test('a pinned model is kept and reset however slow its warm-up is', () => {
+  const { result, log } = choose({ dpdfnet4: 3.125, dpdfnet2: 2.5 }, 'dpdfnet4', true);
+  assert.equal(result.model, 'dpdfnet4');
+  assert.deepEqual(result.warmupMs, { dpdfnet4: 3.125 });
+  assert.deepEqual(log, ['create dpdfnet4', 'reset dpdfnet4']);
 });
 
 test('an engine that throws during warm-up is freed and the error propagates', () => {

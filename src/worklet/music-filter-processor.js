@@ -1,7 +1,7 @@
 import { createDpdfFilter } from '../pipeline/dpdf-filter.js';
 import { DelayLine } from './delay-line.js';
 import { FrameStats } from './frame-stats.js';
-import { selectModel } from './model-choice.js';
+import { isLiveModel, selectModel } from './model-choice.js';
 
 const REPORT_EVERY_HOPS = 100;
 const RENDER_QUANTUM = 128;
@@ -30,25 +30,29 @@ export function defineMusicFilterProcessor({ Base, engines, sampleRate, clock })
       this.filter = null;
       this.engine = null;
       this.model = null;
+      this.isPinned = false;
       this.mono = null;
       this.renderDry = null;
       this.reportedStages = new Set();
       this.port.onmessage = ({ data }) => this.handleMessage(data);
 
       try {
-        const { wasm, models, failMode = 'passthrough' } = options.processorOptions;
+        const { wasm, models, failMode = 'passthrough', model: pinnedModel } = options.processorOptions;
         if (!FAIL_MODES.has(failMode)) throw new Error(`unknown failMode ${failMode}`);
         this.failMode = failMode;
+        if (pinnedModel !== undefined && !isLiveModel(pinnedModel)) throw new Error(`unknown live model ${pinnedModel}`);
+        this.isPinned = pinnedModel !== undefined;
         if (sampleRate !== FILTER_SAMPLE_RATE) {
           throw new Error(`expected a ${FILTER_SAMPLE_RATE} Hz audio context, got ${sampleRate}`);
         }
         this.models = models ?? {};
         engines.init(wasm);
-        const choice = this.choose(FIRST_MODEL);
+        const choice = this.choose(pinnedModel ?? FIRST_MODEL);
         if (!choice) return;
         this.port.postMessage({
           type: 'ready',
           model: choice.model,
+          isPinned: this.isPinned,
           warmupMs: choice.warmupMs,
           sampleRate,
           clock: clock.name,
@@ -62,7 +66,12 @@ export function defineMusicFilterProcessor({ Base, engines, sampleRate, clock })
     }
 
     choose(model) {
-      const choice = selectModel({ from: model, createEngine: (name) => this.createEngine(name), clock });
+      const choice = selectModel({
+        from: model,
+        isPinned: this.isPinned,
+        createEngine: (name) => this.createEngine(name),
+        clock,
+      });
       if (!choice.engine) {
         this.port.postMessage({ type: 'too-slow', warmupMs: choice.warmupMs });
         return null;

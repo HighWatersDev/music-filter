@@ -5,6 +5,7 @@ import {
   createOverloadMonitor,
   createWithWasmFallback,
   liveDetail,
+  modelOverride,
   overloadAction,
   pickFeedVideo,
   selectFilterMode,
@@ -75,7 +76,7 @@ const flush = () => new Promise((resolve) => setImmediate(resolve));
 
 const TOTAL_DELAY = 3165;
 
-function setup({ failToCreate = null, createContext = null, model = 'dpdfnet4' } = {}) {
+function setup({ failToCreate = null, createContext = null, model = 'dpdfnet4', isPinned = false } = {}) {
   const context = fakeContext();
   const filterNode = fakeNode('worklet');
   let onMessage;
@@ -88,7 +89,10 @@ function setup({ failToCreate = null, createContext = null, model = 'dpdfnet4' }
       onMessage = handler;
       return new Promise((resolve, reject) => {
         resolveNode = () =>
-          resolve({ node: filterNode, ready: { type: 'ready', model, latencySamples: TOTAL_DELAY, warmupMs: { [model]: 1.25 } } });
+          resolve({
+            node: filterNode,
+            ready: { type: 'ready', model, isPinned, latencySamples: TOTAL_DELAY, warmupMs: { [model]: 1.25 } },
+          });
         rejectNode = reject;
         if (failToCreate) reject(failToCreate);
       });
@@ -149,6 +153,19 @@ test('a trip on DPDFNet-4 switches to DPDFNet-2, and a trip on DPDFNet-2 is too 
   assert.equal(overloadAction({ model: 'dpdfnet2', isOverloaded: true }), 'too-slow');
   assert.equal(overloadAction({ model: 'dpdfnet4', isOverloaded: false }), 'none');
   assert.equal(overloadAction({ model: 'dpdfnet2', isOverloaded: false }), 'none');
+});
+
+test('a pinned model is never switched, so an overload on it is too slow', () => {
+  assert.equal(overloadAction({ model: 'dpdfnet4', isPinned: true, isOverloaded: true }), 'too-slow');
+  assert.equal(overloadAction({ model: 'dpdfnet4', isPinned: true, isOverloaded: false }), 'none');
+});
+
+test('the model override only applies on localhost and only with a known model', () => {
+  assert.equal(modelOverride({ hostname: 'localhost', override: 'dpdfnet2' }), 'dpdfnet2');
+  assert.equal(modelOverride({ hostname: 'localhost', override: 'dpdfnet4' }), 'dpdfnet4');
+  assert.equal(modelOverride({ hostname: 'www.youtube.com', override: 'dpdfnet2' }), null);
+  assert.equal(modelOverride({ hostname: 'localhost', override: 'dfn3' }), null);
+  assert.equal(modelOverride({ hostname: 'localhost', override: null }), null);
 });
 
 test('the live detail names the model and the engine plus output delay', () => {
@@ -350,6 +367,16 @@ test('an overload on DPDFNet-4 asks the worklet for DPDFNet-2 and mutes the outp
   assert.equal(views.at(-1).detail, 'live, DPDFNet-2, 76 ms delay');
   assert.equal(filterOutputOf(context, filterNode).gain.value, 1);
   assert.deepEqual(originalLevels(views), [0]);
+});
+
+test('an overload on a pinned DPDFNet-4 shows the too-slow message without asking for a switch', async () => {
+  const { context, filter, filterNode, views, ready, post } = setup({ isPinned: true });
+  filter.setEnabled(true, new FakeVideo());
+  await ready();
+  for (let i = 0; i < 15; i++) post(slowStats);
+  assert.equal(views.at(-1).state, 'too-slow');
+  assert.equal(filterOutputOf(context, filterNode).gain.value, 0);
+  assert.deepEqual(filterNode.port.messages.filter((m) => m.type === 'use-model'), []);
 });
 
 test('an overload after switching to DPDFNet-2 shows the too-slow message', async () => {

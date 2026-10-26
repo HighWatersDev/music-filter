@@ -3,8 +3,10 @@ const TIMED_HOPS = 40;
 const MAX_MEAN_MS = { dpdfnet4: 1.7, dpdfnet2: 2.2 };
 const FALLBACK = { dpdfnet4: 'dpdfnet2' };
 
+export const isLiveModel = (model) => Object.hasOwn(MAX_MEAN_MS, model);
+
 export function judgeWarmup(model, meanMs) {
-  if (!(model in MAX_MEAN_MS)) throw new Error(`unknown live model ${model}`);
+  if (!isLiveModel(model)) throw new Error(`unknown live model ${model}`);
   if (meanMs < MAX_MEAN_MS[model]) return { verdict: 'keep' };
   const next = FALLBACK[model];
   return next ? { verdict: 'fallback', next } : { verdict: 'too-slow' };
@@ -21,7 +23,7 @@ export function warmUp(engine, clock) {
   return (clock.now() - start) / TIMED_HOPS;
 }
 
-export function selectModel({ from, createEngine, clock }) {
+export function selectModel({ from, isPinned = false, createEngine, clock }) {
   const warmupMs = {};
   let model = from;
   for (;;) {
@@ -35,7 +37,7 @@ export function selectModel({ from, createEngine, clock }) {
     }
     warmupMs[model] = meanMs;
     const { verdict, next } = judgeWarmup(model, meanMs);
-    if (verdict === 'keep') {
+    if (verdict === 'keep' || isPinned) {
       engine.reset();
       return { model, engine, warmupMs };
     }
