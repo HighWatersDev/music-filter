@@ -1,0 +1,12 @@
+crate: native/dpdf
+commit: 963cd876f80fef3edc1ae0cbd7b628b061112386
+built: 2026-10-26T07:58:26Z
+rustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)
+cargo: cargo 1.99.1 (5f94df478 2026-08-27)
+wasm-pack: wasm-pack 0.15.0
+tract-onnx: 0.23.8
+wasm-bindgen: 0.2.129
+target features: +simd128,+bulk-memory,+nontrapping-fptoint,+mutable-globals
+wasm bytes: 13630421
+wasm sha256: 41400df3dc2797f28a0449084ec4f714065fce723e64bfc74a76398933b6e3b5
+js sha256: e725a26ae2b2973fde9ab79d508e273133343a16eb96c168e28479ab776abf31

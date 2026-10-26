@@ -6,6 +6,8 @@
     "test": "node --test 'test/*.test.js'",
     "build": "npm run build:worklet && npm run build:separator",
     "build:wasm": "bash scripts/build-wasm.sh",
+    "build:dpdf": "bash scripts/build-dpdf.sh",
+    "fetch:models": "bash scripts/fetch-models.sh",
     "build:worklet": "esbuild src/worklet/processor.js --bundle --format=esm --outfile=extension/dist/processor.js",
     "build:separator": "node scripts/build-separator.mjs",
     "bench": "node bench/node-bench.mjs",
