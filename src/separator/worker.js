@@ -1,6 +1,7 @@
 import separate, { models, REVISIONS } from '@audio/neural-separate';
 import { backends, fetchModel, load } from '@audio/neural-runtime';
-import { initSync, df_create, df_get_frame_length, df_process_frame } from '../../vendor/df/df.js';
+import { initSync, Dpdf } from '../../vendor/dpdf/dpdf.js';
+import { createDpdfFilter, wrapDpdf } from '../pipeline/dpdf-filter.js';
 import { createSerialQueue, StreamEngine } from '../pipeline/stream-engine.js';
 import { createVoiceFilter } from '../pipeline/voice-filter.js';
 
@@ -154,9 +155,11 @@ async function runSeparation({ id, model, device: requestedDevice, sampleRate, l
 }
 
 const STREAM_MESSAGES = new Set(['stream-reset', 'stream-chunk', 'stream-abort', 'playhead']);
-const DFN_WASM_URL = new URL('../assets/df_bg.wasm', import.meta.url);
-const DFN_MODEL_URL = new URL('../assets/DeepFilterNet3_onnx.tar.gz', import.meta.url);
-const DFN_ATTEN_LIM_DB = 100;
+const DPDF_WASM_URL = new URL('../assets/dpdf_bg.wasm', import.meta.url);
+const DPDF_MODEL_URL = new URL('../assets/dpdfnet4.onnx', import.meta.url);
+const DPDF_SAMPLE_RATE = 48000;
+// 'dfn3' is what the read-ahead content script sent before the DPDFNet swap. It now gets DPDFNet-4 too.
+const VOICE_MODELS = new Set(['dpdfnet4', 'dfn3']);
 let stream = null;
 let voiceFilter;
 const enqueueSeparation = createSerialQueue();
@@ -170,13 +173,10 @@ async function fetchBytes(url) {
 function loadVoiceFilter(report) {
   if (voiceFilter) return voiceFilter;
   report({ stage: 'loading' });
-  voiceFilter = Promise.all([fetchBytes(DFN_WASM_URL), fetchBytes(DFN_MODEL_URL)]).then(async ([wasm, model]) => {
-    initSync(await WebAssembly.compile(wasm));
-    const handle = df_create(model, DFN_ATTEN_LIM_DB);
-    return createVoiceFilter({
-      processFrame: (frame) => df_process_frame(handle, frame),
-      frameLength: df_get_frame_length(handle),
-    });
+  voiceFilter = Promise.all([fetchBytes(DPDF_WASM_URL), fetchBytes(DPDF_MODEL_URL)]).then(async ([wasm, model]) => {
+    initSync({ module: await WebAssembly.compile(wasm) });
+    const engine = wrapDpdf(new Dpdf(model));
+    return createVoiceFilter({ filter: createDpdfFilter({ engine }) });
   });
   voiceFilter.catch(() => {
     voiceFilter = undefined;
@@ -186,10 +186,13 @@ function loadVoiceFilter(report) {
 
 function createWindowFilter(model, streamId) {
   if (model === 'fake') return async (left, right) => [left.map((s) => s * 0.5), right.map((s) => s * 0.5)];
-  if (model !== 'dfn3') throw new Error(`unknown model ${model}`);
+  if (!VOICE_MODELS.has(model)) throw new Error(`unknown model ${model}`);
   const report = (status) => post({ type: 'stream-status', streamId, ...status });
   loadVoiceFilter(report).catch(() => {});
-  return async (left, right, sampleRate, options) => (await loadVoiceFilter(report))(left, right, options);
+  return async (left, right, sampleRate, options) => {
+    if (sampleRate !== DPDF_SAMPLE_RATE) throw new Error(`DPDFNet needs ${DPDF_SAMPLE_RATE} Hz audio, got ${sampleRate} Hz`);
+    return (await loadVoiceFilter(report))(left, right, options);
+  };
 }
 
 function handleStream(data) {
