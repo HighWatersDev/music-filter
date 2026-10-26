@@ -1,10 +1,13 @@
 import test from 'node:test';
+import { setFlagsFromString } from 'node:v8';
+import { runInNewContext } from 'node:vm';
 import assert from 'node:assert/strict';
 import {
   createLiveFilter,
   createOverloadMonitor,
   createWithWasmFallback,
   liveDetail,
+  liveModelPlan,
   modelOverride,
   overloadAction,
   pickFeedVideo,
@@ -98,11 +101,16 @@ function setup({
   let rejectNode;
   const views = [];
   const builds = [];
+  const preparations = [];
   const filter = createLiveFilter({
     createContext: createContext ?? (() => context),
-    createFilterNode: (_context, handler) => {
+    prepareFilter: async (_context, request) => {
+      preparations.push(request);
+      return { prepared: preparations.length };
+    },
+    createFilterNode: (_context, handler, prepared) => {
       onMessage = handler;
-      builds.push({ contextState: context.state });
+      builds.push({ contextState: context.state, prepared });
       return new Promise((resolve, reject) => {
         resolveNode = () =>
           resolve({
@@ -114,6 +122,8 @@ function setup({
               wasmSource: 'bytes',
               latencySamples: TOTAL_DELAY,
               warmupMs: { [model]: 1.25 },
+              heldModels: [],
+              wasmMemoryBytes: 65536,
             },
           });
         rejectNode = reject;
@@ -129,6 +139,7 @@ function setup({
     filterNode,
     views,
     builds,
+    preparations,
     post: (message) => onMessage(message),
     ready: async () => {
       await flush();
@@ -479,6 +490,8 @@ test('the panel gets the engine details from the ready message', async () => {
     wasmSource: 'bytes',
     latencySamples: TOTAL_DELAY,
     warmupMs: { dpdfnet4: 1.25 },
+    heldModels: [],
+    wasmMemoryBytes: 65536,
   });
 });
 
@@ -832,4 +845,75 @@ test('the live delay does not add baseLatency, which Chrome already counts in ou
     liveDetail({ model: 'dpdfnet4', latencySamples: 3165, sampleRate: 48000, outputLatency: 0.032, baseLatency: 0.0053 }),
     'live, DPDFNet-4, 98 ms delay',
   );
+});
+
+test('the next worklet starts from the model the last one settled on', async () => {
+  const { filter, preparations, ready, post } = setup();
+  const video = new FakeVideo();
+  filter.setEnabled(true, video);
+  await ready();
+  assert.deepEqual(preparations, [{ lastModel: null }]);
+  for (let i = 0; i < 15; i++) post(slowStats);
+  await flush();
+  post({ type: 'model', model: 'dpdfnet2', latencySamples: TOTAL_DELAY, warmupMs: {} });
+  post({ type: 'error', stage: 'process', message: 'boom' });
+  filter.setEnabled(false);
+  filter.setEnabled(true, video);
+  await ready();
+  assert.deepEqual(preparations.at(-1), { lastModel: 'dpdfnet2' });
+});
+
+test('a first worklet loads both models and starts from DPDFNet-4', () => {
+  assert.deepEqual(liveModelPlan({ pinnedModel: null, lastModel: null }), { load: ['dpdfnet4', 'dpdfnet2'], options: {} });
+  assert.deepEqual(liveModelPlan({ pinnedModel: null, lastModel: 'dpdfnet4' }), { load: ['dpdfnet4', 'dpdfnet2'], options: {} });
+});
+
+test('once DPDFNet-2 was chosen, a new worklet loads and starts from DPDFNet-2 only', () => {
+  assert.deepEqual(liveModelPlan({ pinnedModel: null, lastModel: 'dpdfnet2' }), {
+    load: ['dpdfnet2'],
+    options: { from: 'dpdfnet2' },
+  });
+});
+
+test('a pinned model loads only itself', () => {
+  assert.deepEqual(liveModelPlan({ pinnedModel: 'dpdfnet4', lastModel: 'dpdfnet2' }), {
+    load: ['dpdfnet4'],
+    options: { model: 'dpdfnet4' },
+  });
+});
+
+test('the worklet gets the bytes straight away when there is no compiled module, as on Firefox', () => {
+  const calls = [];
+  createWithWasmFallback((wasm) => (calls.push(wasm), 'node'), { module: null, bytes: 'bytes' });
+  assert.deepEqual(calls, ['bytes']);
+});
+
+setFlagsFromString('--expose-gc');
+const collectGarbage = runInNewContext('gc');
+
+test('the prepared model bytes are not kept alive by the running worklet', async () => {
+  const context = fakeContext();
+  let prepared = { bytes: new ArrayBuffer(1024) };
+  const weak = new WeakRef(prepared.bytes);
+  const filter = createLiveFilter({
+    createContext: () => context,
+    prepareFilter: async () => {
+      const handOff = prepared;
+      prepared = null;
+      return handOff;
+    },
+    createFilterNode: async (_context, onMessage) => {
+      const node = fakeNode('worklet');
+      node.port.onmessage = onMessage;
+      return { node, ready: { type: 'ready', model: 'dpdfnet4', latencySamples: TOTAL_DELAY } };
+    },
+    onChange: () => {},
+  });
+  filter.setEnabled(true, new FakeVideo());
+  await flush();
+  await flush();
+  collectGarbage();
+  await flush();
+  collectGarbage();
+  assert.equal(weak.deref(), undefined);
 });

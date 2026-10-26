@@ -1,5 +1,6 @@
 import { createOriginalAudioRegistry } from './original-audio.js';
 import { createPanel } from './panel.js';
+import { releaseBuffer } from '../worklet/release-buffer.js';
 
 const SAFARI_VENDOR = 'Apple Computer, Inc.';
 const MODEL_LABELS = { dpdfnet4: 'DPDFNet-4', dpdfnet2: 'DPDFNet-2' };
@@ -138,6 +139,7 @@ function setLevel(gain, context, level) {
 
 export function createLiveFilter({
   createContext,
+  prepareFilter = async () => null,
   createFilterNode,
   onChange,
   switchTimeoutMs = SWITCH_TIMEOUT_MS,
@@ -156,6 +158,7 @@ export function createLiveFilter({
   let isTooSlow = false;
   let pendingFilter = null;
   let filter = null;
+  let lastModel = null;
   let main = null;
   let feeding = null;
   let holds = 0;
@@ -190,10 +193,14 @@ export function createLiveFilter({
     context.resume?.().then(sync, () => {});
   }
 
+  // onMessage lives as long as the worklet, so it is created outside the scope that holds the
+  // prepared model bytes. Inside it, its closure context would keep those bytes alive.
   function ensureFilter() {
     if (filter || pendingFilter) return;
+    const onMessage = (message) => handleMessage(message, pending);
     const pending = Promise.resolve()
-      .then(() => whileSuspended(() => createFilterNode(context, (message) => handleMessage(message, pending))))
+      .then(() => prepareFilter(context, { lastModel }))
+      .then((prepared) => whileSuspended(() => createFilterNode(context, onMessage, prepared)))
       .then(
         ({ node, ready }) => {
           if (pending !== pendingFilter) return;
@@ -202,6 +209,7 @@ export function createLiveFilter({
           node.connect(output);
           output.connect(context.destination);
           filter = { node, output, pending, isIdle: false, engine: engineInfo(ready), settleSwitch: null };
+          lastModel = ready.model;
           pendingFilter = null;
           sync();
         },
@@ -219,8 +227,8 @@ export function createLiveFilter({
     pendingFilter = pending;
   }
 
-  function engineInfo({ model, isPinned = false, wasmSource, latencySamples, warmupMs }) {
-    return { model, isPinned, wasmSource, latencySamples, warmupMs };
+  function engineInfo({ model, isPinned = false, wasmSource, latencySamples, warmupMs, heldModels, wasmMemoryBytes }) {
+    return { model, isPinned, wasmSource, latencySamples, warmupMs, heldModels, wasmMemoryBytes };
   }
 
   function handleMessage(message, pending) {
@@ -241,6 +249,7 @@ export function createLiveFilter({
     if (message.type === 'model') {
       const { isPinned, wasmSource } = filter.engine;
       filter.engine = engineInfo({ ...message, isPinned, wasmSource });
+      lastModel = message.model;
       settleSwitch();
       isSwitching = false;
       isOverloaded = false;
@@ -450,29 +459,38 @@ export function createLiveFilter({
   };
 }
 
+export function liveModelPlan({ pinnedModel, lastModel }) {
+  if (pinnedModel) return { load: [pinnedModel], options: { model: pinnedModel } };
+  if (lastModel === FALLBACK_MODEL) return { load: [FALLBACK_MODEL], options: { from: FALLBACK_MODEL } };
+  return { load: ['dpdfnet4', FALLBACK_MODEL], options: {} };
+}
+
 const addedModules = new WeakMap();
-let assetsPromise;
+// Firefox 158 cannot clone a WebAssembly.Module from a content script into processorOptions, so it gets
+// the bytes, which the processor's initSync compiles on the audio thread. cloneInto exists only there.
+const isFirefoxContentScript = typeof cloneInto === 'function';
 
 function extensionUrl(path) {
   return chrome.runtime.getURL(path);
 }
 
+// In Firefox, content.fetch returns buffers that already live in the page compartment, where the
+// AudioWorkletNode constructor serializes processorOptions, so they need no cloneInto copy.
 async function fetchBytes(path) {
-  const response = await fetch(extensionUrl(path));
+  const pageFetch = isFirefoxContentScript && typeof content === 'object' ? content.fetch : null;
+  const response = await (pageFetch ? pageFetch(extensionUrl(path)) : fetch(extensionUrl(path)));
   if (!response.ok) throw new Error(`${path} returned ${response.status}`);
   return response.arrayBuffer();
 }
 
-function loadAssets() {
-  assetsPromise ??= Promise.all([
-    fetchBytes(WASM_PATH).then(async (bytes) => ({ bytes, module: await WebAssembly.compile(bytes) })),
-    fetchBytes(MODEL_PATHS.dpdfnet4),
-    fetchBytes(MODEL_PATHS.dpdfnet2),
-  ]).catch((error) => {
-    assetsPromise = undefined;
-    throw error;
-  });
-  return assetsPromise;
+async function loadWasm() {
+  const bytes = await fetchBytes(WASM_PATH);
+  return { bytes, module: isFirefoxContentScript ? null : await WebAssembly.compile(bytes) };
+}
+
+async function loadModels(names) {
+  const buffers = await Promise.all(names.map((name) => fetchBytes(MODEL_PATHS[name])));
+  return Object.fromEntries(names.map((name, i) => [name, buffers[i]]));
 }
 
 function addProcessorModule(context) {
@@ -482,6 +500,14 @@ function addProcessorModule(context) {
     addedModules.set(context, pending);
   }
   return addedModules.get(context);
+}
+
+// Nothing is cached between worklets. The processor keeps the one model it may still switch to, and a
+// later worklet (after an error or a retry) fetches again from the extension, which takes milliseconds.
+async function prepareExtensionFilter(context, { lastModel }, pinnedModel) {
+  const plan = liveModelPlan({ pinnedModel, lastModel });
+  const [wasm, models] = await Promise.all([loadWasm(), loadModels(plan.load), addProcessorModule(context)]);
+  return { wasm, models, options: plan.options };
 }
 
 function waitForReady(node, onMessage) {
@@ -518,9 +544,8 @@ function waitForReady(node, onMessage) {
 
 const isCloneError = (error) => error?.name === 'DataCloneError' || /clone/i.test(String(error?.message));
 
-// Firefox 158 cannot clone a WebAssembly.Module from a content script into processorOptions. The bytes
-// clone everywhere, and the processor's initSync compiles them, at the cost of a compile on the audio thread.
 export function createWithWasmFallback(create, { module, bytes }) {
+  if (!module) return create(bytes);
   try {
     return create(module);
   } catch (error) {
@@ -529,31 +554,36 @@ export function createWithWasmFallback(create, { module, bytes }) {
   }
 }
 
-// Firefox content script objects are opaque to the page compartment, where the AudioWorkletNode
-// constructor serializes processorOptions, so they are copied into the page first.
-function toPageObject(value) {
-  return typeof cloneInto === 'function' ? cloneInto(value, window) : value;
+// Firefox content script objects are opaque to the page compartment, so the options are built there.
+// The buffers came from content.fetch and are already page objects, so only the small fields are cloned.
+function toPageOptions({ wasm, models, ...fields }) {
+  if (!isFirefoxContentScript) return { wasm, models, ...fields };
+  const options = cloneInto(fields, window);
+  const pageModels = cloneInto({}, window);
+  for (const [name, bytes] of Object.entries(models)) pageModels.wrappedJSObject[name] = bytes;
+  options.wrappedJSObject.models = pageModels;
+  options.wrappedJSObject.wasm = wasm;
+  return options;
 }
 
-async function createExtensionFilterNode(context, onMessage, pinnedModel) {
-  const [[wasm, dpdfnet4, dpdfnet2]] = await Promise.all([loadAssets(), addProcessorModule(context)]);
-  const node = createWithWasmFallback(
-    (compiledOrBytes) =>
-      new AudioWorkletNode(context, 'music-filter', {
-        numberOfInputs: 1,
-        numberOfOutputs: 1,
-        channelCount: 2,
-        channelCountMode: 'explicit',
-        outputChannelCount: [2],
-        processorOptions: toPageObject({
-          wasm: compiledOrBytes,
-          models: { dpdfnet4, dpdfnet2 },
-          failMode: 'silence',
-          ...(pinnedModel && { model: pinnedModel }),
+function createExtensionFilterNode(context, onMessage, { wasm, models, options }) {
+  let node;
+  try {
+    node = createWithWasmFallback(
+      (compiledOrBytes) =>
+        new AudioWorkletNode(context, 'music-filter', {
+          numberOfInputs: 1,
+          numberOfOutputs: 1,
+          channelCount: 2,
+          channelCountMode: 'explicit',
+          outputChannelCount: [2],
+          processorOptions: toPageOptions({ wasm: compiledOrBytes, models, failMode: 'silence', ...options }),
         }),
-      }),
-    wasm,
-  );
+      wasm,
+    );
+  } finally {
+    for (const bytes of [wasm.bytes, ...Object.values(models)]) releaseBuffer(bytes);
+  }
   return waitForReady(node, onMessage);
 }
 
@@ -590,7 +620,8 @@ export function startLiveFilter() {
   const pinnedModel = modelOverride({ hostname: location.hostname, override: readModelOverride() });
   const filter = createLiveFilter({
     createContext: () => new AudioContext({ sampleRate: SAMPLE_RATE, latencyHint: 'interactive' }),
-    createFilterNode: (context, onMessage) => createExtensionFilterNode(context, onMessage, pinnedModel),
+    prepareFilter: (context, request) => prepareExtensionFilter(context, request, pinnedModel),
+    createFilterNode: createExtensionFilterNode,
     onChange: (view) => panel?.update(view),
   });
   const tick = () => {
