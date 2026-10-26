@@ -6,8 +6,8 @@ const SAMPLE_RATE = 48000;
 const SECONDS = 60;
 const ATTEN_LIM_DB = 100;
 
-const wasm = readFileSync(new URL('../extension/assets/df_bg.wasm', import.meta.url));
-const model = readFileSync(new URL('../extension/assets/DeepFilterNet3_onnx.tar.gz', import.meta.url));
+const wasm = readFileSync(new URL('../vendor/df/df_bg.wasm', import.meta.url));
+const model = readFileSync(new URL('../vendor/df/DeepFilterNet3_onnx.tar.gz', import.meta.url));
 
 initSync(wasm);
 const handle = df_create(new Uint8Array(model), ATTEN_LIM_DB);

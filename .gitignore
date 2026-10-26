@@ -2,6 +2,8 @@ node_modules/
 extension/dist/
 extension/assets/
 vendor/df/df.js
+vendor/df/df_bg.wasm
+vendor/df/DeepFilterNet3_onnx.tar.gz
 test-page/sample.mp4
 .DS_Store
 tools/listen/node_modules/

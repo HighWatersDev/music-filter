@@ -25,10 +25,11 @@ RUSTFLAGS="-C target-feature=+simd128,+bulk-memory,+nontrapping-fptoint,+mutable
 
 test -f pkg/df.js || { echo "expected pkg/df.js, got:"; ls pkg; exit 1; }
 
-mkdir -p "$ROOT/vendor/df" "$ROOT/extension/assets"
+# DeepFilterNet3 only feeds bench/node-bench.mjs now, so it stays out of the extension package.
+mkdir -p "$ROOT/vendor/df"
 cp pkg/df.js "$ROOT/vendor/df/df.js"
-cp pkg/df_bg.wasm "$ROOT/extension/assets/df_bg.wasm"
-cp ../models/DeepFilterNet3_onnx.tar.gz "$ROOT/extension/assets/DeepFilterNet3_onnx.tar.gz"
+cp pkg/df_bg.wasm "$ROOT/vendor/df/df_bg.wasm"
+cp ../models/DeepFilterNet3_onnx.tar.gz "$ROOT/vendor/df/DeepFilterNet3_onnx.tar.gz"
 
 {
   echo "repo: https://github.com/Rikorose/DeepFilterNet"

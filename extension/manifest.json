@@ -32,7 +32,9 @@
     {
       "resources": [
         "dist/processor.js",
-        "assets/*",
+        "assets/dpdf_bg.wasm",
+        "assets/dpdfnet4.onnx",
+        "assets/dpdfnet2.onnx",
         "clip-recorder.js",
         "separator.html",
         "dist/separator-frame.js",
