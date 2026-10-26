@@ -1,9 +1,9 @@
 import separate, { models, REVISIONS } from '@audio/neural-separate';
 import { backends, fetchModel, load } from '@audio/neural-runtime';
-import { initSync, Dpdf } from '../../vendor/dpdf/dpdf.js';
-import { createDpdfFilter, wrapDpdf } from '../pipeline/dpdf-filter.js';
+import createDpdfBindings from 'dpdf-bindings';
+import { wrapDpdf } from '../pipeline/dpdf-filter.js';
 import { createSerialQueue, StreamEngine } from '../pipeline/stream-engine.js';
-import { createVoiceFilter } from '../pipeline/voice-filter.js';
+import { createReadAheadFilters } from './read-ahead-filters.js';
 
 const CACHE_NAME = 'audio-neural';
 const SESSION_OPTIONS = { enableCpuMemArena: false, enableMemPattern: false };
@@ -156,12 +156,12 @@ async function runSeparation({ id, model, device: requestedDevice, sampleRate, l
 
 const STREAM_MESSAGES = new Set(['stream-reset', 'stream-chunk', 'stream-abort', 'playhead']);
 const DPDF_WASM_URL = new URL('../assets/dpdf_bg.wasm', import.meta.url);
-const DPDF_MODEL_URL = new URL('../assets/dpdfnet4.onnx', import.meta.url);
+const DPDF_MODEL_URLS = { dpdfnet4: new URL('../assets/dpdfnet4.onnx', import.meta.url) };
 const DPDF_SAMPLE_RATE = 48000;
 // 'dfn3' is what the read-ahead content script sent before the DPDFNet swap. It now gets DPDFNet-4 too.
 const VOICE_MODELS = new Set(['dpdfnet4', 'dfn3']);
 let stream = null;
-let voiceFilter;
+let dpdfModule;
 const enqueueSeparation = createSerialQueue();
 
 async function fetchBytes(url) {
@@ -170,28 +170,34 @@ async function fetchBytes(url) {
   return new Uint8Array(await response.arrayBuffer());
 }
 
-function loadVoiceFilter(report) {
-  if (voiceFilter) return voiceFilter;
-  report({ stage: 'loading' });
-  voiceFilter = Promise.all([fetchBytes(DPDF_WASM_URL), fetchBytes(DPDF_MODEL_URL)]).then(async ([wasm, model]) => {
-    initSync({ module: await WebAssembly.compile(wasm) });
-    const engine = wrapDpdf(new Dpdf(model));
-    return createVoiceFilter({ filter: createDpdfFilter({ engine }) });
+function compileDpdf() {
+  dpdfModule ??= fetchBytes(DPDF_WASM_URL).then((bytes) => WebAssembly.compile(bytes));
+  dpdfModule.catch(() => {
+    dpdfModule = undefined;
   });
-  voiceFilter.catch(() => {
-    voiceFilter = undefined;
-  });
-  return voiceFilter;
+  return dpdfModule;
 }
+
+async function instantiateDpdf() {
+  const module = await compileDpdf();
+  const { Dpdf, initSync } = createDpdfBindings();
+  initSync({ module });
+  return { createEngine: (modelBytes) => wrapDpdf(new Dpdf(modelBytes)) };
+}
+
+const readAheadFilters = createReadAheadFilters({
+  instantiate: instantiateDpdf,
+  fetchModel: (model) => fetchBytes(DPDF_MODEL_URLS[model]),
+});
 
 function createWindowFilter(model, streamId) {
   if (model === 'fake') return async (left, right) => [left.map((s) => s * 0.5), right.map((s) => s * 0.5)];
   if (!VOICE_MODELS.has(model)) throw new Error(`unknown model ${model}`);
-  const report = (status) => post({ type: 'stream-status', streamId, ...status });
-  loadVoiceFilter(report).catch(() => {});
+  if (readAheadFilters.isLoading) post({ type: 'stream-status', streamId, stage: 'loading' });
+  readAheadFilters.load().catch(() => {});
   return async (left, right, sampleRate, options) => {
     if (sampleRate !== DPDF_SAMPLE_RATE) throw new Error(`DPDFNet needs ${DPDF_SAMPLE_RATE} Hz audio, got ${sampleRate} Hz`);
-    return (await loadVoiceFilter(report))(left, right, options);
+    return readAheadFilters.filter(left, right, sampleRate, options);
   };
 }
 

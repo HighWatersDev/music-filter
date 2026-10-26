@@ -1,7 +1,8 @@
 import { build } from 'esbuild';
 import { copyFileSync, mkdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { basename, join } from 'node:path';
+import { basename, join, resolve } from 'node:path';
+import { dpdfBindingsPlugin } from './dpdf-bindings-factory.mjs';
 
 const OUT_DIR = 'extension/dist';
 const ORT_FILES = [
@@ -23,6 +24,7 @@ await build({
   outdir: OUT_DIR,
   // neural-separate and neural-runtime import node: modules only on their Node code paths.
   external: ['node:*'],
+  plugins: [dpdfBindingsPlugin(resolve('vendor/dpdf/dpdf.js'))],
   logLevel: 'info',
 });
 
