@@ -1,8 +1,9 @@
 import { createOriginalAudioRegistry } from './original-audio.js';
 import { createPanel } from './panel.js';
 
-export const LIVE_DETAIL = 'live, 40 ms delay';
 const SAFARI_VENDOR = 'Apple Computer, Inc.';
+const MODEL_LABELS = { dpdfnet4: 'DPDFNet-4', dpdfnet2: 'DPDFNet-2' };
+const FALLBACK_MODEL = 'dpdfnet2';
 const MODES = new Set(['live', 'read-ahead']);
 const OVERLOAD_WINDOW_FRAMES = 500;
 // The overload test counts frames longer than two render quanta, not one. The interactive output buffer
@@ -15,17 +16,33 @@ const OVERLOAD_CLEAR_WINDOWS = 3;
 const OUTPUT_RAMP_SECONDS = 0.03;
 
 const PROCESSOR_PATH = 'dist/processor.js';
-const WASM_PATH = 'assets/df_bg.wasm';
-const MODEL_PATH = 'assets/DeepFilterNet3_onnx.tar.gz';
-const ATTEN_LIM_DB = 100;
+const WASM_PATH = 'assets/dpdf_bg.wasm';
+const MODEL_PATHS = { dpdfnet4: 'assets/dpdfnet4.onnx', dpdfnet2: 'assets/dpdfnet2.onnx' };
 const SAMPLE_RATE = 48000;
 const READY_TIMEOUT_MS = 10000;
 const TICK_MS = 250;
 const TAP_CONNECT = 'music-filter:tap-connect';
 
-export function selectFilterMode({ vendor, hostname, override }) {
+export function selectFilterMode({ vendor, userAgent = '', hostname, override }) {
   if (hostname === 'localhost' && MODES.has(override)) return override;
-  return vendor === SAFARI_VENDOR ? 'read-ahead' : 'live';
+  if (vendor === SAFARI_VENDOR) return 'read-ahead';
+  if (userAgent.includes('Android') && userAgent.includes('Firefox')) return 'read-ahead';
+  return 'live';
+}
+
+export function overloadAction({ model, isOverloaded }) {
+  if (!isOverloaded) return 'none';
+  return model === FALLBACK_MODEL ? 'too-slow' : 'switch';
+}
+
+export function liveDetail({ model, latencySamples, sampleRate, outputLatency }) {
+  if (!MODEL_LABELS[model]) return 'live';
+  const delayMs = Math.round((latencySamples / sampleRate) * 1000 + (outputLatency || 0) * 1000);
+  return `live, ${MODEL_LABELS[model]}, ${delayMs} ms delay`;
+}
+
+export function tooSlowError(warmupMs) {
+  return Object.assign(new Error('this device is too slow to filter live'), { isTooSlow: true, warmupMs });
 }
 
 export function createOverloadMonitor({
@@ -122,6 +139,8 @@ export function createLiveFilter({ createContext, createFilterNode, onChange }) 
   let isEnabled = false;
   let failure = null;
   let isOverloaded = false;
+  let isSwitching = false;
+  let isTooSlow = false;
   let pendingFilter = null;
   let filter = null;
   let main = null;
@@ -143,36 +162,70 @@ export function createLiveFilter({ createContext, createFilterNode, onChange }) 
     const pending = Promise.resolve()
       .then(() => createFilterNode(context, (message) => handleMessage(message, pending)))
       .then(
-        (node) => {
+        ({ node, ready }) => {
           if (pending !== pendingFilter) return;
           const output = context.createGain();
           output.gain.value = 0;
           node.connect(output);
           output.connect(context.destination);
-          filter = { node, output, pending, isIdle: false };
+          filter = { node, output, pending, isIdle: false, engine: engineInfo(ready) };
           pendingFilter = null;
           sync();
         },
         (error) => {
           if (pending !== pendingFilter) return;
           pendingFilter = null;
+          if (error?.isTooSlow) {
+            isTooSlow = true;
+            sync();
+            return;
+          }
           fail(`voice filter did not start (${error.message})`);
         },
       );
     pendingFilter = pending;
   }
 
+  function engineInfo({ model, latencySamples, warmupMs }) {
+    return { model, latencySamples, warmupMs };
+  }
+
   function handleMessage(message, pending) {
     if (filter?.pending !== pending) return;
     if (message.type === 'error') {
+      isSwitching = false;
       discardFilter();
       fail(`voice filter stopped (${message.stage}: ${message.message})`);
       return;
     }
+    if (message.type === 'too-slow') {
+      isSwitching = false;
+      isTooSlow = true;
+      discardFilter();
+      sync();
+      return;
+    }
+    if (message.type === 'model') {
+      filter.engine = engineInfo(message);
+      isSwitching = false;
+      isOverloaded = false;
+      overload.reset();
+      sync();
+      return;
+    }
     if (message.type !== 'stats') return;
     stats.record(message);
-    if (isEnabled && feeding) isOverloaded = overload.record(message);
+    if (isEnabled && feeding && !isSwitching) recordLoad(message);
     sync();
+  }
+
+  function recordLoad(message) {
+    const action = overloadAction({ model: filter.engine.model, isOverloaded: overload.record(message) });
+    isOverloaded = action === 'too-slow';
+    if (action !== 'switch') return;
+    overload.reset();
+    isSwitching = true;
+    filter.node.port?.postMessage({ type: 'use-model', model: FALLBACK_MODEL });
   }
 
   function discardFilter() {
@@ -222,7 +275,7 @@ export function createLiveFilter({ createContext, createFilterNode, onChange }) 
       feeding = wanted;
     }
     setIdle(!feeding);
-    const isAudible = Boolean(feeding) && !currentFailure() && !isOverloaded;
+    const isAudible = Boolean(feeding) && !currentFailure() && !isOverloaded && !isSwitching && !isTooSlow;
     if (filter) setLevel(filter.output, context, isAudible ? 1 : 0);
     onChange(view());
   }
@@ -230,7 +283,8 @@ export function createLiveFilter({ createContext, createFilterNode, onChange }) 
   function state() {
     if (!isEnabled) return 'off';
     if (currentFailure()) return 'error';
-    if (isOverloaded) return 'too-slow';
+    if (isOverloaded || isTooSlow) return 'too-slow';
+    if (isSwitching) return 'starting';
     if (feeding && context?.state === 'running') return 'filtered';
     return 'starting';
   }
@@ -244,9 +298,18 @@ export function createLiveFilter({ createContext, createFilterNode, onChange }) 
 
   function view() {
     const current = state();
+    const engine = filter?.engine ?? null;
+    const detail = liveDetail({
+      model: isSwitching ? null : engine?.model,
+      latencySamples: engine?.latencySamples,
+      sampleRate: context?.sampleRate,
+      outputLatency: context?.outputLatency,
+    });
     return {
       state: current,
-      detail: current === 'error' ? currentFailure() : LIVE_DETAIL,
+      detail: current === 'error' ? currentFailure() : detail,
+      model: engine?.model ?? null,
+      engine,
       originalLevel: originalLevel(),
       stats: stats.current(),
     };
@@ -284,6 +347,7 @@ export function createLiveFilter({ createContext, createFilterNode, onChange }) 
     }
     failure = null;
     isOverloaded = false;
+    isTooSlow = false;
     overload.reset();
     try {
       ensureGraph();
@@ -327,12 +391,17 @@ function extensionUrl(path) {
   return chrome.runtime.getURL(path);
 }
 
+async function fetchBytes(path) {
+  const response = await fetch(extensionUrl(path));
+  if (!response.ok) throw new Error(`${path} returned ${response.status}`);
+  return response.arrayBuffer();
+}
+
 function loadAssets() {
   assetsPromise ??= Promise.all([
-    fetch(extensionUrl(WASM_PATH))
-      .then((response) => response.arrayBuffer())
-      .then(async (bytes) => ({ bytes, module: await WebAssembly.compile(bytes) })),
-    fetch(extensionUrl(MODEL_PATH)).then((response) => response.arrayBuffer()),
+    fetchBytes(WASM_PATH).then(async (bytes) => ({ bytes, module: await WebAssembly.compile(bytes) })),
+    fetchBytes(MODEL_PATHS.dpdfnet4),
+    fetchBytes(MODEL_PATHS.dpdfnet2),
   ]).catch((error) => {
     assetsPromise = undefined;
     throw error;
@@ -361,7 +430,12 @@ function waitForReady(node, onMessage) {
       if (data.type === 'ready') {
         isReady = true;
         clearTimeout(timer);
-        resolve(node);
+        resolve({ node, ready: data });
+      }
+      if (data.type === 'too-slow') {
+        clearTimeout(timer);
+        node.port.postMessage({ type: 'dispose' });
+        reject(tooSlowError(data.warmupMs));
       }
       if (data.type === 'error') {
         clearTimeout(timer);
@@ -396,7 +470,7 @@ function toPageObject(value) {
 }
 
 async function createExtensionFilterNode(context, onMessage) {
-  const [[wasm, modelBytes]] = await Promise.all([loadAssets(), addProcessorModule(context)]);
+  const [[wasm, dpdfnet4, dpdfnet2]] = await Promise.all([loadAssets(), addProcessorModule(context)]);
   const node = createWithWasmFallback(
     (compiledOrBytes) =>
       new AudioWorkletNode(context, 'music-filter', {
@@ -405,7 +479,7 @@ async function createExtensionFilterNode(context, onMessage) {
         channelCount: 2,
         channelCountMode: 'explicit',
         outputChannelCount: [2],
-        processorOptions: toPageObject({ wasm: compiledOrBytes, modelBytes, attenLimDb: ATTEN_LIM_DB, failMode: 'silence' }),
+        processorOptions: toPageObject({ wasm: compiledOrBytes, models: { dpdfnet4, dpdfnet2 }, failMode: 'silence' }),
       }),
     wasm,
   );

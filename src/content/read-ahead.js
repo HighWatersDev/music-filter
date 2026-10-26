@@ -17,7 +17,7 @@ const TICK_EVENTS = ['loadedmetadata', 'play', 'playing', 'seeked', 'ratechange'
 
 const isSafari = navigator.vendor === 'Apple Computer, Inc.';
 const isLocalTest = location.hostname === 'localhost' && localStorage.getItem('mf_fake_separator') === '1';
-const MODEL = isLocalTest ? 'fake' : 'dfn3';
+const MODEL = isLocalTest ? 'fake' : 'dpdfnet4';
 
 const streams = new Map();
 const objectUrls = new Map();
@@ -40,7 +40,13 @@ let tappedPlayerVolume = null;
 
 let panel;
 
-if (selectFilterMode({ vendor: navigator.vendor, hostname: location.hostname, override: readModeOverride() }) === 'live') {
+const filterMode = selectFilterMode({
+  vendor: navigator.vendor,
+  userAgent: navigator.userAgent,
+  hostname: location.hostname,
+  override: readModeOverride(),
+});
+if (filterMode === 'live') {
   startLiveFilter();
 } else {
   panel = createPanel({ onToggle: (on) => setEnabled(on).catch((error) => failClosed(error.message)) });

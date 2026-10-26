@@ -37,7 +37,18 @@ export function createPanel({ onToggle, mode = 'read-ahead' }) {
   const status = document.createElement('div');
   root.append(button, status);
 
-  const view = { mode, isOn: false, state: 'off', detail: '', aheadSeconds: 0, windows: 0, originalLevel: 1, stats: null };
+  const view = {
+    mode,
+    isOn: false,
+    state: 'off',
+    detail: '',
+    aheadSeconds: 0,
+    windows: 0,
+    originalLevel: 1,
+    stats: null,
+    model: null,
+    engine: null,
+  };
   const render = () => {
     button.textContent = `Music filter: ${view.isOn ? 'ON' : 'OFF'}`;
     const extra = view.detail && STATES_WITH_DETAIL.has(view.state) ? ` · ${view.detail}` : '';
@@ -49,6 +60,8 @@ export function createPanel({ onToggle, mode = 'read-ahead' }) {
       windows: String(view.windows),
     });
     if (view.stats) root.dataset.stats = JSON.stringify(view.stats);
+    if (view.model) root.dataset.model = view.model;
+    if (view.engine) root.dataset.engine = JSON.stringify(view.engine);
     if (!root.isConnected) document.documentElement.append(root);
   };
   button.addEventListener('click', (event) => {

@@ -5,7 +5,9 @@ const PORT = 8791;
 const FILTERED_WITHIN_MS = 3000;
 const STEP_TIMEOUT_MS = 5000;
 
+const LIVE_MODELS = { dpdfnet4: 'DPDFNet-4', dpdfnet2: 'DPDFNet-2' };
 const stats = (s) => JSON.parse(s.panel.stats ?? 'null');
+const engine = (s) => JSON.parse(s.panel.engine ?? 'null');
 
 await withExtensionPage({ port: PORT, storage: { mf_mode: 'live' } }, async (page) => {
   const seen = await watchPanel(page);
@@ -21,11 +23,18 @@ await withExtensionPage({ port: PORT, storage: { mf_mode: 'live' } }, async (pag
   );
   console.log(`filtered after ${Date.now() - startedAt} ms`, filtered.panel);
   assert.equal(filtered.panel.originalLevel, '0');
+  const { model } = filtered.panel;
+  assert.ok(model in LIVE_MODELS, `unexpected model ${model}`);
+  assert.equal(engine(filtered).model, model);
+  assert.ok(engine(filtered).warmupMs[model] > 0, `no warm-up time for ${model}: ${filtered.panel.engine}`);
+  assert.match(await page.textContent('[data-state]'), new RegExp(`Filtered · live, ${LIVE_MODELS[model]}, \\d+ ms delay`));
 
   await page.waitForTimeout(2000);
   const playing = await snapshot(page);
   assert.ok(playing.currentTime > filtered.currentTime + 1.5, `playback did not advance: ${JSON.stringify(playing)}`);
   assert.equal(playing.panel.state, 'filtered');
+  assert.equal(playing.panel.model, model);
+  assert.equal(playing.panel.originalLevel, '0');
   assert.ok(stats(playing)?.frames > 0, `the worklet reported no frames: ${playing.panel.stats}`);
 
   await video(page, () => (document.querySelector('video').playbackRate = 1.5));

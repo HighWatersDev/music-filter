@@ -1,12 +1,13 @@
+import { createDpdfFilter } from '../pipeline/dpdf-filter.js';
 import { DelayLine } from './delay-line.js';
-import { FrameAdapter } from './frame-adapter.js';
 import { FrameStats } from './frame-stats.js';
+import { selectModel } from './model-choice.js';
 
-const REPORT_EVERY_FRAMES = 100;
+const REPORT_EVERY_HOPS = 100;
 const RENDER_QUANTUM = 128;
-// Measured at 48 kHz by cross-correlating input and df_process_frame output for impulses and voiced
-// bursts (attenLimDb 1, 6 and 100). With attenLimDb 0 DeepFilterNet returns the input undelayed.
-const MODEL_DELAY_SAMPLES = 1440;
+const HOP_INPUT_SAMPLES = 480;
+const FILTER_SAMPLE_RATE = 48000;
+const FIRST_MODEL = 'dpdfnet4';
 const FAIL_MODES = new Set(['silence', 'passthrough']);
 
 function isAllFinite(samples) {
@@ -16,7 +17,7 @@ function isAllFinite(samples) {
   return true;
 }
 
-export function defineMusicFilterProcessor({ Base, df, sampleRate, clock }) {
+export function defineMusicFilterProcessor({ Base, engines, sampleRate, clock }) {
   return class MusicFilterProcessor extends Base {
     constructor(options) {
       super();
@@ -26,71 +27,127 @@ export function defineMusicFilterProcessor({ Base, df, sampleRate, clock }) {
       this.hasFailed = false;
       this.hasRenderFailed = false;
       this.failMode = 'silence';
+      this.filter = null;
+      this.engine = null;
+      this.model = null;
       this.mono = null;
       this.renderDry = null;
       this.reportedStages = new Set();
       this.port.onmessage = ({ data }) => this.handleMessage(data);
 
       try {
-        const { wasm, modelBytes, attenLimDb, failMode = 'passthrough' } = options.processorOptions;
+        const { wasm, models, failMode = 'passthrough' } = options.processorOptions;
         if (!FAIL_MODES.has(failMode)) throw new Error(`unknown failMode ${failMode}`);
         this.failMode = failMode;
-        df.initSync(wasm);
-        this.handle = df.df_create(new Uint8Array(modelBytes), attenLimDb);
-        const frameLength = df.df_get_frame_length(this.handle);
-        const modelDelay = attenLimDb === 0 ? 0 : MODEL_DELAY_SAMPLES;
-        this.stats = new FrameStats({
-          budgetMs: (frameLength / sampleRate) * 1000,
-          quantumMs: (RENDER_QUANTUM / sampleRate) * 1000,
-        });
-        this.frameLength = frameLength;
-        this.modelDelay = modelDelay;
-        this.dryFrame = new Float32Array(frameLength);
-        this.silentFrame = new Float32Array(frameLength);
-        this.resetBuffers();
+        if (sampleRate !== FILTER_SAMPLE_RATE) {
+          throw new Error(`expected a ${FILTER_SAMPLE_RATE} Hz audio context, got ${sampleRate}`);
+        }
+        this.models = models ?? {};
+        engines.init(wasm);
+        const choice = this.choose(FIRST_MODEL);
+        if (!choice) return;
         this.port.postMessage({
           type: 'ready',
-          frameLength,
+          model: choice.model,
+          warmupMs: choice.warmupMs,
           sampleRate,
           clock: clock.name,
           failMode,
-          latencySamples: this.renderDelay.delaySamples,
+          latencySamples: this.filter.delay,
         });
       } catch (error) {
-        this.adapter = null;
+        this.releaseEngine();
         this.reportError('init', error);
       }
     }
 
-    resetBuffers() {
-      this.dryDelay = new DelayLine(this.modelDelay);
-      this.adapter = new FrameAdapter(this.frameLength, (frame) => this.processFrame(frame));
-      this.renderDelay = new DelayLine(this.adapter.latencySamples + this.modelDelay);
+    choose(model) {
+      const choice = selectModel({ from: model, createEngine: (name) => this.createEngine(name), clock });
+      if (!choice.engine) {
+        this.port.postMessage({ type: 'too-slow', warmupMs: choice.warmupMs });
+        return null;
+      }
+      this.useEngine(choice);
+      return choice;
+    }
+
+    createEngine(model) {
+      const bytes = this.models[model];
+      if (!bytes) throw new Error(`no model bytes for ${model}`);
+      return engines.create(bytes);
+    }
+
+    useEngine({ model, engine }) {
+      this.engine = engine;
+      this.model = model;
+      this.filter = createDpdfFilter({
+        engine: {
+          hop: engine.hop,
+          processHop: (input, output) => this.runHop(input, output),
+          reset: () => engine.reset(),
+        },
+      });
+      this.stats = new FrameStats({
+        budgetMs: (HOP_INPUT_SAMPLES / sampleRate) * 1000,
+        quantumMs: (RENDER_QUANTUM / sampleRate) * 1000,
+      });
+      this.dryDelay = new DelayLine(this.filter.delay);
+    }
+
+    releaseEngine() {
+      const { engine } = this;
+      this.engine = null;
+      this.filter = null;
+      engine?.free();
+    }
+
+    switchModel(model) {
+      if (!this.filter || this.hasFailed || model === this.model) return;
+      try {
+        this.releaseEngine();
+        const choice = this.choose(model);
+        if (!choice) return;
+        this.port.postMessage({
+          type: 'model',
+          model: choice.model,
+          warmupMs: choice.warmupMs,
+          latencySamples: this.filter.delay,
+        });
+      } catch (error) {
+        this.engine = null;
+        this.filter = null;
+        this.reportError('switch', error);
+      }
     }
 
     handleMessage(data) {
+      if (this.isDisposed) return;
       if (data?.type === 'bypass' && !this.isSilentOnFailure) this.isBypassed = Boolean(data.value);
       if (data?.type === 'idle') this.setIdle(Boolean(data.value));
+      if (data?.type === 'use-model') this.switchModel(data.model);
       if (data?.type === 'dispose') this.dispose();
     }
 
     setIdle(isIdle) {
       if (isIdle === this.isIdle) return;
       this.isIdle = isIdle;
-      if (!isIdle && this.adapter) this.resetBuffers();
+      if (isIdle || !this.filter) return;
+      try {
+        this.filter.reset();
+        this.dryDelay = new DelayLine(this.filter.delay);
+      } catch (error) {
+        this.failProcessing(error);
+      }
     }
 
     dispose() {
       if (this.isDisposed) return;
       this.isDisposed = true;
-      this.adapter = null;
-      if (this.handle === undefined || typeof df.df_free !== 'function') return;
       try {
-        df.df_free(this.handle);
+        this.releaseEngine();
       } catch (error) {
         this.reportError('dispose', error);
       }
-      this.handle = undefined;
     }
 
     get isSilentOnFailure() {
@@ -103,28 +160,28 @@ export function defineMusicFilterProcessor({ Base, df, sampleRate, clock }) {
       this.port.postMessage({ type: 'error', stage, message: String(error?.message ?? error) });
     }
 
-    processFrame(frame) {
-      const dry = this.dryDelay.process(frame, this.dryFrame);
-      const fallback = this.isSilentOnFailure ? this.silentFrame : dry;
-      if (this.hasFailed) return fallback;
-
-      let processed;
+    runHop(input, output) {
+      if (this.hasFailed) {
+        output.fill(0);
+        return;
+      }
       try {
         const start = clock.now();
-        processed = df.df_process_frame(this.handle, frame);
+        this.engine.processHop(input, output);
         this.stats.record(clock.now() - start);
       } catch (error) {
         this.failProcessing(error);
-        return fallback;
+        output.fill(0);
+        return;
       }
-      if (!isAllFinite(processed)) {
-        this.failProcessing(new Error('df_process_frame returned a non-finite sample'));
-        return fallback;
+      if (!isAllFinite(output)) {
+        this.failProcessing(new Error('the model returned a non-finite sample'));
+        output.fill(0);
+        return;
       }
-      if (this.stats.count >= REPORT_EVERY_FRAMES) {
-        this.port.postMessage({ type: 'stats', ...this.stats.drain() });
+      if (this.stats.count >= REPORT_EVERY_HOPS) {
+        this.port.postMessage({ type: 'stats', model: this.model, ...this.stats.drain() });
       }
-      return this.isBypassed ? dry : processed;
     }
 
     failProcessing(error) {
@@ -150,9 +207,9 @@ export function defineMusicFilterProcessor({ Base, df, sampleRate, clock }) {
       }
     }
 
-    delayRenderInput(mono) {
+    delayDry(mono) {
       if (this.renderDry?.length !== mono.length) this.renderDry = new Float32Array(mono.length);
-      return this.renderDelay.process(mono, this.renderDry);
+      return this.dryDelay.process(mono, this.renderDry);
     }
 
     writeFallback(output, dry) {
@@ -175,7 +232,7 @@ export function defineMusicFilterProcessor({ Base, df, sampleRate, clock }) {
         return true;
       }
 
-      if (!this.adapter) {
+      if (!this.filter) {
         if (this.isSilentOnFailure) this.writeFallback(output, null);
         else this.passThrough(input, output);
         return true;
@@ -184,12 +241,16 @@ export function defineMusicFilterProcessor({ Base, df, sampleRate, clock }) {
       let dry = null;
       try {
         const mono = this.toMono(input, input[0]?.length ?? output[0].length);
-        dry = this.delayRenderInput(mono);
-        if (this.hasRenderFailed) {
+        dry = this.delayDry(mono);
+        if (this.hasFailed || this.hasRenderFailed) {
           this.writeFallback(output, dry);
           return true;
         }
-        this.adapter.process(mono, output[0]);
+        this.filter.process(mono, output[0]);
+        if (this.hasFailed || this.isBypassed) {
+          this.writeFallback(output, dry);
+          return true;
+        }
         for (let channel = 1; channel < output.length; channel++) output[channel].set(output[0]);
       } catch (error) {
         this.reportError('render', error);

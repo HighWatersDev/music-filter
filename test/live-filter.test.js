@@ -4,8 +4,11 @@ import {
   createLiveFilter,
   createOverloadMonitor,
   createWithWasmFallback,
+  liveDetail,
+  overloadAction,
   pickFeedVideo,
   selectFilterMode,
+  tooSlowError,
 } from '../src/content/live-filter.js';
 
 class FakeVideo extends EventTarget {
@@ -47,6 +50,8 @@ function fakeContext() {
   const context = {
     state: 'running',
     currentTime: 1,
+    sampleRate: 48000,
+    outputLatency: 0.01,
     destination: fakeNode('destination'),
     gains: [],
     sources: new Map(),
@@ -68,7 +73,9 @@ function fakeContext() {
 
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 
-function setup({ failToCreate = null, createContext = null } = {}) {
+const TOTAL_DELAY = 3165;
+
+function setup({ failToCreate = null, createContext = null, model = 'dpdfnet4' } = {}) {
   const context = fakeContext();
   const filterNode = fakeNode('worklet');
   let onMessage;
@@ -80,7 +87,8 @@ function setup({ failToCreate = null, createContext = null } = {}) {
     createFilterNode: (_context, handler) => {
       onMessage = handler;
       return new Promise((resolve, reject) => {
-        resolveNode = () => resolve(filterNode);
+        resolveNode = () =>
+          resolve({ node: filterNode, ready: { type: 'ready', model, latencySamples: TOTAL_DELAY, warmupMs: { [model]: 1.25 } } });
         rejectNode = reject;
         if (failToCreate) reject(failToCreate);
       });
@@ -109,10 +117,47 @@ const originalGainOf = (context) => context.gains[0];
 const filterOutputOf = (context, filterNode) => [...filterNode.connections][0];
 const originalLevels = (views) => [...new Set(views.filter((v) => v.state !== 'off').map((v) => v.originalLevel))];
 
-test('mode selection uses read-ahead only on Safari', () => {
-  assert.equal(selectFilterMode({ vendor: 'Apple Computer, Inc.', hostname: 'www.youtube.com' }), 'read-ahead');
-  assert.equal(selectFilterMode({ vendor: 'Google Inc.', hostname: 'www.youtube.com' }), 'live');
-  assert.equal(selectFilterMode({ vendor: '', hostname: 'www.youtube.com' }), 'live');
+const UA = {
+  chromeMac: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36',
+  chromeAndroid:
+    'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Mobile Safari/537.36',
+  firefoxMac: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:144.0) Gecko/20100101 Firefox/144.0',
+  firefoxAndroid: 'Mozilla/5.0 (Android 15; Mobile; rv:144.0) Gecko/144.0 Firefox/144.0',
+  safariIphone:
+    'Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.6 Mobile/15E148 Safari/604.1',
+};
+const mode = (vendor, userAgent, extra = {}) => selectFilterMode({ vendor, userAgent, hostname: 'www.youtube.com', ...extra });
+
+test('mode selection uses read-ahead on Safari and live on desktop Chrome and Firefox', () => {
+  assert.equal(mode('Apple Computer, Inc.', UA.safariIphone), 'read-ahead');
+  assert.equal(mode('Google Inc.', UA.chromeMac), 'live');
+  assert.equal(mode('', UA.firefoxMac), 'live');
+  assert.equal(mode('', undefined), 'live');
+});
+
+test('mode selection uses read-ahead on Firefox for Android but live on Chrome for Android', () => {
+  assert.equal(mode('', UA.firefoxAndroid), 'read-ahead');
+  assert.equal(mode('Google Inc.', UA.chromeAndroid), 'live');
+});
+
+test('the localhost override also applies on Firefox for Android', () => {
+  assert.equal(mode('', UA.firefoxAndroid, { hostname: 'localhost', override: 'live' }), 'live');
+});
+
+test('a trip on DPDFNet-4 switches to DPDFNet-2, and a trip on DPDFNet-2 is too slow', () => {
+  assert.equal(overloadAction({ model: 'dpdfnet4', isOverloaded: true }), 'switch');
+  assert.equal(overloadAction({ model: 'dpdfnet2', isOverloaded: true }), 'too-slow');
+  assert.equal(overloadAction({ model: 'dpdfnet4', isOverloaded: false }), 'none');
+  assert.equal(overloadAction({ model: 'dpdfnet2', isOverloaded: false }), 'none');
+});
+
+test('the live detail names the model and the engine plus output delay', () => {
+  assert.equal(
+    liveDetail({ model: 'dpdfnet4', latencySamples: 3165, sampleRate: 48000, outputLatency: 0.01 }),
+    'live, DPDFNet-4, 76 ms delay',
+  );
+  assert.equal(liveDetail({ model: 'dpdfnet2', latencySamples: 3165, sampleRate: 48000 }), 'live, DPDFNet-2, 66 ms delay');
+  assert.equal(liveDetail({ model: null }), 'live');
 });
 
 test('the mode override only applies on localhost and only with a known mode', () => {
@@ -183,7 +228,8 @@ test('once ready, the element feeds only the worklet and the original stays at 0
   assert.equal(output.gain.value, 1);
   assert.ok(output.connections.has(context.destination));
   assert.equal(views.at(-1).state, 'filtered');
-  assert.equal(views.at(-1).detail, 'live, 40 ms delay');
+  assert.equal(views.at(-1).detail, 'live, DPDFNet-4, 76 ms delay');
+  assert.equal(views.at(-1).model, 'dpdfnet4');
   assert.deepEqual(originalLevels(views), [0]);
 });
 
@@ -254,8 +300,8 @@ test('an element that cannot be routed fails closed with the element muted', () 
 const slowStats = { type: 'stats', count: 100, overQuantum: 60, overTwoQuanta: 10, meanMs: 4, p95Ms: 6, maxMs: 9 };
 const fastStats = { type: 'stats', count: 100, overQuantum: 0, overTwoQuanta: 0, meanMs: 1, p95Ms: 2, maxMs: 3 };
 
-test('an overloaded device mutes and says so instead of playing the original', async () => {
-  const { context, filter, filterNode, views, ready, post } = setup();
+test('an overloaded device on DPDFNet-2 mutes and says so instead of playing the original', async () => {
+  const { context, filter, filterNode, views, ready, post } = setup({ model: 'dpdfnet2' });
   const video = new FakeVideo();
   filter.setEnabled(true, video);
   await ready();
@@ -270,8 +316,8 @@ test('an overloaded device mutes and says so instead of playing the original', a
   assert.notDeepEqual(filterNode.port.messages.at(-1), { type: 'idle', value: true });
 });
 
-test('an overloaded device recovers after 15 s of clean frames', async () => {
-  const { context, filter, filterNode, views, ready, post } = setup();
+test('an overloaded device on DPDFNet-2 recovers after 15 s of clean frames', async () => {
+  const { context, filter, filterNode, views, ready, post } = setup({ model: 'dpdfnet2' });
   filter.setEnabled(true, new FakeVideo());
   await ready();
   for (let i = 0; i < 15; i++) post(slowStats);
@@ -281,6 +327,80 @@ test('an overloaded device recovers after 15 s of clean frames', async () => {
   assert.equal(views.at(-1).state, 'filtered');
   assert.equal(filterOutputOf(context, filterNode).gain.value, 1);
   assert.equal(originalGainOf(context).gain.value, 0);
+});
+
+test('an overload on DPDFNet-4 asks the worklet for DPDFNet-2 and mutes the output until it switches', async () => {
+  const { context, filter, filterNode, views, ready, post } = setup();
+  const video = new FakeVideo();
+  filter.setEnabled(true, video);
+  await ready();
+  for (let i = 0; i < 15; i++) post(slowStats);
+
+  assert.deepEqual(filterNode.port.messages.at(-1), { type: 'use-model', model: 'dpdfnet2' });
+  assert.equal(views.at(-1).state, 'starting');
+  assert.equal(filterOutputOf(context, filterNode).gain.value, 0);
+  assert.equal(originalGainOf(context).gain.value, 0);
+
+  for (let i = 0; i < 15; i++) post(slowStats);
+  assert.equal(filterNode.port.messages.filter((m) => m.type === 'use-model').length, 1, 'stats during the switch are ignored');
+
+  post({ type: 'model', model: 'dpdfnet2', latencySamples: TOTAL_DELAY, warmupMs: { dpdfnet2: 1.375 } });
+  assert.equal(views.at(-1).state, 'filtered');
+  assert.equal(views.at(-1).model, 'dpdfnet2');
+  assert.equal(views.at(-1).detail, 'live, DPDFNet-2, 76 ms delay');
+  assert.equal(filterOutputOf(context, filterNode).gain.value, 1);
+  assert.deepEqual(originalLevels(views), [0]);
+});
+
+test('an overload after switching to DPDFNet-2 shows the too-slow message', async () => {
+  const { context, filter, filterNode, views, ready, post } = setup();
+  filter.setEnabled(true, new FakeVideo());
+  await ready();
+  for (let i = 0; i < 15; i++) post(slowStats);
+  post({ type: 'model', model: 'dpdfnet2', latencySamples: TOTAL_DELAY, warmupMs: {} });
+  for (let i = 0; i < 10; i++) post(slowStats);
+  assert.equal(views.at(-1).state, 'filtered', 'the new model starts with a clean overload record');
+  for (let i = 0; i < 5; i++) post(slowStats);
+  assert.equal(views.at(-1).state, 'too-slow');
+  assert.equal(filterOutputOf(context, filterNode).gain.value, 0);
+  assert.equal(filterNode.port.messages.filter((m) => m.type === 'use-model').length, 1);
+});
+
+test('a worklet that finds the device too slow at start mutes with the too-slow message', async () => {
+  const { context, filter, views } = setup({ failToCreate: tooSlowError({ dpdfnet4: 3, dpdfnet2: 2.5 }) });
+  const video = new FakeVideo();
+  filter.setEnabled(true, video);
+  await flush();
+
+  assert.equal(views.at(-1).state, 'too-slow');
+  assert.equal(originalGainOf(context).gain.value, 0);
+  assert.deepEqual(originalLevels(views), [0]);
+});
+
+test('a switch that finds DPDFNet-2 too slow disposes the worklet and shows the too-slow message', async () => {
+  const { context, filter, filterNode, views, ready, post } = setup();
+  filter.setEnabled(true, new FakeVideo());
+  await ready();
+  for (let i = 0; i < 15; i++) post(slowStats);
+  post({ type: 'too-slow', warmupMs: { dpdfnet2: 2.5 } });
+
+  assert.equal(views.at(-1).state, 'too-slow');
+  assert.deepEqual(filterNode.port.messages.at(-1), { type: 'dispose' });
+  assert.equal(originalGainOf(context).gain.value, 0);
+  assert.deepEqual(originalLevels(views), [0]);
+});
+
+test('turning the filter off and on after too-slow tries again', async () => {
+  const { filter, views, ready, post } = setup();
+  const video = new FakeVideo();
+  filter.setEnabled(true, video);
+  await ready();
+  post({ type: 'too-slow', warmupMs: {} });
+  filter.setEnabled(false);
+  filter.setEnabled(true, video);
+  assert.equal(views.at(-1).state, 'starting');
+  await ready();
+  assert.equal(views.at(-1).state, 'filtered');
 });
 
 test('frames just over one render quantum do not count as overload', async () => {

@@ -1,223 +1,163 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { defineMusicFilterProcessor } from '../src/worklet/music-filter-processor.js';
+import {
+  BLOCK,
+  RESAMPLER_ONSET,
+  TOTAL_DELAY,
+  createProcessor,
+  firstSoundAt,
+  fakeEngines,
+  isInput,
+  isProcessed,
+  messagesOf,
+  render,
+  send,
+} from './helpers/fake-processor.js';
 
-const BLOCK = 128;
-const FRAME = 480;
-const INPUT_LEVEL = 0.9;
-const PROCESSED_LEVEL = 0.25;
-
-class FakeProcessorBase {
-  constructor() {
-    this.messages = [];
-    this.port = { onmessage: null, postMessage: (message) => this.messages.push(message) };
-  }
-}
-
-function fakeDf({ createError = null } = {}) {
-  const df = {
-    behaviour: 'ok',
-    initSync() {},
-    df_create() {
-      if (createError) throw createError;
-      return 1;
-    },
-    df_get_frame_length: () => FRAME,
-    df_process_frame(handle, frame) {
-      if (df.behaviour === 'throw') throw new Error('frame exploded');
-      if (df.behaviour === 'nan') return new Float32Array(frame.length).fill(Number.NaN);
-      if (df.behaviour === 'short') return new Float32Array(10);
-      return new Float32Array(frame.length).fill(PROCESSED_LEVEL);
-    },
-  };
-  return df;
-}
-
-function createProcessor({ df, failMode }) {
-  const Processor = defineMusicFilterProcessor({
-    Base: FakeProcessorBase,
-    df,
-    sampleRate: 48000,
-    clock: { name: 'fake', now: () => 0 },
-  });
-  const processorOptions = { wasm: {}, modelBytes: new ArrayBuffer(4), attenLimDb: 100 };
-  if (failMode) processorOptions.failMode = failMode;
-  return new Processor({ processorOptions });
-}
-
-function render(processor, blocks) {
-  const samples = [];
-  for (let block = 0; block < blocks; block++) {
-    const input = [new Float32Array(BLOCK).fill(INPUT_LEVEL), new Float32Array(BLOCK).fill(INPUT_LEVEL)];
-    const output = [new Float32Array(BLOCK), new Float32Array(BLOCK)];
-    processor.process([input], [output]);
-    samples.push(...output[0], ...output[1]);
-  }
-  return samples;
-}
-
-const errors = (processor) => processor.messages.filter((message) => message.type === 'error');
+const errors = (processor) => messagesOf(processor, 'error');
 
 function assertNeverInput(samples) {
-  assert.ok(
-    samples.every((sample) => sample === 0 || sample === PROCESSED_LEVEL),
-    'an input sample reached the output',
-  );
+  assert.ok(samples.every((sample) => Math.abs(sample) < 0.5), 'an input sample reached the output');
 }
 
 test('silence mode outputs zeros when init fails', () => {
-  const processor = createProcessor({ df: fakeDf({ createError: new Error('bad model') }), failMode: 'silence' });
+  const processor = createProcessor({ engines: fakeEngines({ createError: new Error('bad model') }), failMode: 'silence' });
   const samples = render(processor, 20);
   assert.ok(samples.every((sample) => sample === 0));
   assert.deepEqual(errors(processor).map((m) => m.stage), ['init']);
 });
 
 test('passthrough mode still passes the input through when init fails', () => {
-  const processor = createProcessor({ df: fakeDf({ createError: new Error('bad model') }) });
+  const processor = createProcessor({ engines: fakeEngines({ createError: new Error('bad model') }) });
   const samples = render(processor, 4);
-  assert.ok(samples.every((sample) => Math.abs(sample - INPUT_LEVEL) < 1e-6));
+  assert.ok(samples.every(isInput));
 });
 
-for (const [behaviour, stage] of [
-  ['throw', 'process'],
-  ['nan', 'process'],
-  ['short', 'render'],
-]) {
-  test(`silence mode goes silent after a ${behaviour} frame and reports it once`, () => {
-    const df = fakeDf();
-    const processor = createProcessor({ df, failMode: 'silence' });
-    const before = render(processor, 30);
-    assert.ok(before.slice(-BLOCK).every((sample) => sample === PROCESSED_LEVEL), 'processed audio before the failure');
+test('a context that is not 48 kHz fails init', () => {
+  const processor = createProcessor({ failMode: 'silence', sampleRate: 44100 });
+  assert.match(errors(processor)[0].message, /48000/);
+  assert.ok(render(processor, 4).every((sample) => sample === 0));
+});
 
-    df.behaviour = behaviour;
+for (const behaviour of ['throw', 'nan']) {
+  test(`silence mode goes silent after a ${behaviour} hop and reports it once`, () => {
+    const engines = fakeEngines();
+    const processor = createProcessor({ engines, failMode: 'silence' });
+    const before = render(processor, 60);
+    assert.ok(before.slice(-BLOCK).every(isProcessed), 'processed audio before the failure');
+
+    engines.behaviour = behaviour;
     const after = render(processor, 60);
     assertNeverInput(after);
     assert.ok(after.slice(-20 * BLOCK).every((sample) => sample === 0), 'output settles on silence');
-    assert.deepEqual(errors(processor).map((m) => m.stage), [stage]);
+    assert.deepEqual(errors(processor).map((m) => m.stage), ['process']);
   });
 }
 
 test('silence mode stays silent if the model recovers after a failure', () => {
-  const df = fakeDf();
-  const processor = createProcessor({ df, failMode: 'silence' });
+  const engines = fakeEngines();
+  const processor = createProcessor({ engines, failMode: 'silence' });
   render(processor, 10);
-  df.behaviour = 'throw';
+  engines.behaviour = 'throw';
   render(processor, 10);
-  df.behaviour = 'ok';
-  const samples = render(processor, 30);
+  engines.behaviour = 'ok';
+  const samples = render(processor, 60);
   assert.ok(samples.slice(-10 * BLOCK).every((sample) => sample === 0));
 });
 
-test('passthrough mode falls back to the delayed input after a throwing frame', () => {
-  const df = fakeDf();
-  const processor = createProcessor({ df });
+test('passthrough mode falls back to the delayed input after a throwing hop', () => {
+  const engines = fakeEngines();
+  const processor = createProcessor({ engines });
   render(processor, 30);
-  df.behaviour = 'throw';
+  engines.behaviour = 'throw';
   const samples = render(processor, 60);
-  assert.ok(samples.slice(-10 * BLOCK).every((sample) => Math.abs(sample - INPUT_LEVEL) < 1e-6));
-});
-
-test('passthrough mode falls back to the delayed input after a render error', () => {
-  const df = fakeDf();
-  const processor = createProcessor({ df });
-  render(processor, 30);
-  df.behaviour = 'short';
-  const samples = render(processor, 60);
-  assert.ok(samples.slice(-10 * BLOCK).every((sample) => Math.abs(sample - INPUT_LEVEL) < 1e-6));
+  assert.ok(samples.slice(-10 * BLOCK).every(isInput));
 });
 
 test('an unknown fail mode is rejected at init and outputs silence', () => {
-  const processor = createProcessor({ df: fakeDf(), failMode: 'loud' });
+  const processor = createProcessor({ failMode: 'loud' });
   const samples = render(processor, 4);
   assert.ok(samples.every((sample) => sample === 0));
   assert.match(errors(processor)[0].message, /failMode/);
 });
 
-test('ready reports the fail mode and the 1920-sample delay', () => {
-  const processor = createProcessor({ df: fakeDf(), failMode: 'silence' });
-  const ready = processor.messages.find((message) => message.type === 'ready');
+test('ready reports the fail mode, the model and the 3165-sample delay', () => {
+  const processor = createProcessor({ failMode: 'silence' });
+  const [ready] = messagesOf(processor, 'ready');
   assert.equal(ready.failMode, 'silence');
-  assert.equal(ready.latencySamples, 1920);
+  assert.equal(ready.model, 'dpdfnet4');
+  assert.equal(ready.latencySamples, TOTAL_DELAY);
 });
 
-function send(processor, message) {
-  processor.port.onmessage({ data: message });
-}
+test('processed audio is aligned to the reported delay', () => {
+  const processor = createProcessor({ failMode: 'silence' });
+  const firstAudible = firstSoundAt(render(processor, Math.ceil(TOTAL_DELAY / BLOCK) + 20));
+  assert.ok(firstAudible > TOTAL_DELAY - RESAMPLER_ONSET && firstAudible <= TOTAL_DELAY, `first output at ${firstAudible}`);
+});
 
 test('silence mode ignores bypass, so the input can never reach the output', () => {
-  const processor = createProcessor({ df: fakeDf(), failMode: 'silence' });
+  const processor = createProcessor({ failMode: 'silence' });
   render(processor, 30);
   send(processor, { type: 'bypass', value: true });
-  assertNeverInput(render(processor, 30));
+  assertNeverInput(render(processor, 60));
 });
 
-test('passthrough mode still honours bypass', () => {
-  const processor = createProcessor({ df: fakeDf() });
-  render(processor, 30);
+test('passthrough mode still honours bypass with the input delayed like the filter', () => {
+  const processor = createProcessor();
+  render(processor, 60);
   send(processor, { type: 'bypass', value: true });
   const samples = render(processor, 30);
-  assert.ok(samples.slice(-BLOCK).every((sample) => Math.abs(sample - INPUT_LEVEL) < 1e-6));
+  assert.ok(samples.slice(-BLOCK).every(isInput));
 });
 
-function countingDf() {
-  const df = fakeDf();
-  const process = df.df_process_frame;
-  df.frames = 0;
-  df.df_process_frame = (handle, frame) => {
-    df.frames += 1;
-    return process(handle, frame);
-  };
-  return df;
-}
-
 test('while idle the processor outputs zeros without running the model', () => {
-  const df = countingDf();
-  const processor = createProcessor({ df, failMode: 'silence' });
+  const engines = fakeEngines();
+  const processor = createProcessor({ engines, failMode: 'silence' });
   render(processor, 10);
   send(processor, { type: 'idle', value: true });
-  const before = df.frames;
+  const before = engines.hops;
   const samples = render(processor, 40);
-  assert.equal(df.frames, before);
+  assert.equal(engines.hops, before);
   assert.ok(samples.every((sample) => sample === 0));
 });
 
-test('leaving idle resumes the model with no audio left over from before', () => {
-  const df = countingDf();
-  const processor = createProcessor({ df, failMode: 'silence' });
-  render(processor, 30);
+test('leaving idle resets the model and resumes with no audio left over from before', () => {
+  const engines = fakeEngines();
+  const processor = createProcessor({ engines, failMode: 'silence' });
+  render(processor, 60);
   send(processor, { type: 'idle', value: true });
   render(processor, 10);
+  const resets = engines.created[0].resets;
   send(processor, { type: 'idle', value: false });
-  const samples = render(processor, 30);
-  assert.ok(df.frames > 0);
-  const firstProcessed = samples.findIndex((sample) => sample !== 0);
-  assert.ok(firstProcessed >= 3 * 2 * BLOCK, `processed audio after ${firstProcessed} samples`);
-  assert.ok(samples.slice(-BLOCK).every((sample) => sample === PROCESSED_LEVEL));
+  assert.equal(engines.created[0].resets, resets + 1);
+  const before = engines.hops;
+  const samples = render(processor, 60);
+  assert.ok(engines.hops > before);
+  const firstProcessed = firstSoundAt(samples);
+  assert.ok(firstProcessed > TOTAL_DELAY - RESAMPLER_ONSET, `processed audio after ${firstProcessed} samples`);
+  assert.ok(samples.slice(-BLOCK).every(isProcessed));
 });
 
-test('dispose frees the model when the build exports df_free and ends the processor', () => {
-  const df = countingDf();
-  const freed = [];
-  df.df_free = (handle) => freed.push(handle);
-  const processor = createProcessor({ df, failMode: 'silence' });
+test('dispose frees the engine and ends the processor', () => {
+  const engines = fakeEngines();
+  const processor = createProcessor({ engines, failMode: 'silence' });
   render(processor, 10);
   send(processor, { type: 'dispose' });
-  const before = df.frames;
+  const before = engines.hops;
   const output = [new Float32Array(BLOCK).fill(1), new Float32Array(BLOCK).fill(1)];
-  const input = [new Float32Array(BLOCK).fill(INPUT_LEVEL), new Float32Array(BLOCK).fill(INPUT_LEVEL)];
+  const input = [new Float32Array(BLOCK).fill(0.9), new Float32Array(BLOCK).fill(0.9)];
   assert.equal(processor.process([input], [output]), false);
   assert.ok(output.every((channel) => channel.every((sample) => sample === 0)));
-  assert.equal(df.frames, before);
-  assert.deepEqual(freed, [1]);
+  assert.equal(engines.hops, before);
+  assert.equal(engines.created[0].freed, true);
 });
 
-test('dispose without df_free still stops processing and ends the processor', () => {
-  const df = countingDf();
-  const processor = createProcessor({ df, failMode: 'silence' });
-  render(processor, 10);
+test('a free that throws during dispose is reported and processing still ends', () => {
+  const engines = fakeEngines();
+  const processor = createProcessor({ engines, failMode: 'silence' });
+  engines.freeError = new Error('double free');
   send(processor, { type: 'dispose' });
-  const before = df.frames;
+  assert.deepEqual(errors(processor).map((m) => m.stage), ['dispose']);
   const input = [new Float32Array(BLOCK), new Float32Array(BLOCK)];
   assert.equal(processor.process([input], [[new Float32Array(BLOCK), new Float32Array(BLOCK)]]), false);
-  assert.equal(df.frames, before);
 });
