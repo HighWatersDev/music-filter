@@ -27,8 +27,21 @@ test('silence mode outputs zeros when init fails', () => {
   assert.deepEqual(errors(processor).map((m) => m.stage), ['init']);
 });
 
-test('passthrough mode still passes the input through when init fails', () => {
+test('without a fail mode the processor is silent when init fails', () => {
   const processor = createProcessor({ engines: fakeEngines({ createError: new Error('bad model') }) });
+  assert.ok(render(processor, 20).every((sample) => sample === 0));
+});
+
+test('without a fail mode the processor never lets the input through after a throwing hop', () => {
+  const engines = fakeEngines();
+  const processor = createProcessor({ engines });
+  render(processor, 30);
+  engines.behaviour = 'throw';
+  assertNeverInput(render(processor, 60));
+});
+
+test('passthrough mode still passes the input through when init fails', () => {
+  const processor = createProcessor({ engines: fakeEngines({ createError: new Error('bad model') }), failMode: 'passthrough' });
   const samples = render(processor, 4);
   assert.ok(samples.every(isInput));
 });
@@ -67,7 +80,7 @@ test('silence mode stays silent if the model recovers after a failure', () => {
 
 test('passthrough mode falls back to the delayed input after a throwing hop', () => {
   const engines = fakeEngines();
-  const processor = createProcessor({ engines });
+  const processor = createProcessor({ engines, failMode: 'passthrough' });
   render(processor, 30);
   engines.behaviour = 'throw';
   const samples = render(processor, 60);
@@ -103,7 +116,7 @@ test('silence mode ignores bypass, so the input can never reach the output', () 
 });
 
 test('passthrough mode still honours bypass with the input delayed like the filter', () => {
-  const processor = createProcessor();
+  const processor = createProcessor({ failMode: 'passthrough' });
   render(processor, 60);
   send(processor, { type: 'bypass', value: true });
   const samples = render(processor, 30);

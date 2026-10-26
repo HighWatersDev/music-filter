@@ -39,7 +39,7 @@ export function defineMusicFilterProcessor({ Base, engines, sampleRate, clock })
       this.port.onmessage = ({ data }) => this.handleMessage(data);
 
       try {
-        const { wasm, models, failMode = 'passthrough', model: pinnedModel } = options.processorOptions;
+        const { wasm, models, failMode = 'silence', model: pinnedModel } = options.processorOptions;
         if (!FAIL_MODES.has(failMode)) throw new Error(`unknown failMode ${failMode}`);
         this.failMode = failMode;
         if (pinnedModel !== undefined && !isLiveModel(pinnedModel)) throw new Error(`unknown live model ${pinnedModel}`);
