@@ -20,7 +20,7 @@ function handleConnect(event) {
   worker.onerror = (event) =>
     port.postMessage({ type: 'error', message: `separator worker error: ${event.message || 'failed to load'}` });
   port.onmessage = ({ data }) => worker.postMessage(data, transferablesOf(data));
-  worker.postMessage({ type: 'connect', wasmPaths: chrome.runtime.getURL('dist/ort/') });
+  worker.postMessage({ type: 'connect' });
 }
 
 window.addEventListener('message', handleConnect);

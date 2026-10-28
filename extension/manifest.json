@@ -1,8 +1,15 @@
 {
   "manifest_version": 3,
-  "name": "Music Filter Spike",
-  "version": "0.2.0",
-  "description": "Spike: remove background music from video audio in the browser.",
+  "name": "Music Filter",
+  "version": "1.0.0",
+  "description": "Removes background music from YouTube videos and keeps the voices. Runs on your device. Nothing is uploaded.",
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "96": "icons/icon-96.png",
+    "128": "icons/icon-128.png"
+  },
   "content_scripts": [
     {
       "matches": [
@@ -35,11 +42,9 @@
         "assets/dpdf_bg.wasm",
         "assets/dpdfnet4.onnx",
         "assets/dpdfnet2.onnx",
-        "clip-recorder.js",
         "separator.html",
         "dist/separator-frame.js",
-        "dist/separator-worker.js",
-        "dist/ort/*"
+        "dist/separator-worker.js"
       ],
       "matches": [
         "https://www.youtube.com/*",

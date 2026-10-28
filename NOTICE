@@ -1,0 +1,36 @@
+Music Filter
+Copyright 2026 Rinat Kirimov
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+It includes the following third-party components.
+
+DPDFNet speech enhancement models (dpdfnet4.onnx, dpdfnet2.onnx)
+  Copyright Ceva, Inc.
+  Apache License, Version 2.0
+  https://huggingface.co/Ceva-IP/DPDFNet
+  https://github.com/ceva-ip/DPDFNet
+
+tract (tract-onnx and related crates), compiled into assets/dpdf_bg.wasm
+  Copyright Sonos, Inc. and contributors
+  MIT or Apache License, Version 2.0
+  https://github.com/sonos/tract
+
+rustfft, compiled into assets/dpdf_bg.wasm
+  Copyright the RustFFT developers
+  MIT or Apache License, Version 2.0
+  https://github.com/ejmahler/RustFFT
+
+wasm-bindgen, compiled into assets/dpdf_bg.wasm and its JavaScript glue
+  Copyright the wasm-bindgen developers
+  MIT or Apache License, Version 2.0
+  https://github.com/rustwasm/wasm-bindgen
+
+opus-decoder and @wasm-audio-decoders/common, bundled into dist/separator-worker.js
+  Copyright Ethan Halsall
+  MIT License
+  https://github.com/eshaz/wasm-audio-decoders
+
+The remaining Rust dependencies compiled into assets/dpdf_bg.wasm are licensed
+under MIT, Apache-2.0, Zlib, Unlicense, BSD-2-Clause or Unicode-3.0. Cargo.lock
+in native/dpdf pins their versions.

@@ -1,5 +1,6 @@
 {
   "name": "music-filter",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -11,16 +12,16 @@
     "build:worklet": "esbuild src/worklet/processor.js --bundle --format=esm --outfile=extension/dist/processor.js",
     "build:separator": "node scripts/build-separator.mjs",
     "bench": "node bench/node-bench.mjs",
-    "test:e2e": "npm run build && node test/e2e/live.e2e.mjs && node test/e2e/read-ahead.e2e.mjs"
+    "test:e2e": "npm run build && node test/e2e/live.e2e.mjs && node test/e2e/read-ahead.e2e.mjs",
+    "package": "node scripts/package.mjs",
+    "package:safari": "bash scripts/package-safari.sh",
+    "render:icons": "node scripts/render-icons.mjs"
   },
   "devDependencies": {
     "esbuild": "0.25.0",
     "playwright": "1.49.1"
   },
   "dependencies": {
-    "@audio/neural-runtime": "0.2.0",
-    "@audio/neural-separate": "0.7.0",
-    "onnxruntime-web": "1.30.0",
     "opus-decoder": "0.7.12"
   }
 }

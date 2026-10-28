@@ -1,16 +1,8 @@
 import { build } from 'esbuild';
-import { copyFileSync, mkdirSync } from 'node:fs';
-import { createRequire } from 'node:module';
-import { basename, join, resolve } from 'node:path';
+import { resolve } from 'node:path';
 import { dpdfBindingsPlugin } from './dpdf-bindings-factory.mjs';
 
 const OUT_DIR = 'extension/dist';
-const ORT_FILES = [
-  'ort-wasm-simd-threaded.wasm',
-  'ort-wasm-simd-threaded.mjs',
-  'ort-wasm-simd-threaded.asyncify.wasm',
-  'ort-wasm-simd-threaded.asyncify.mjs',
-];
 
 await build({
   entryPoints: {
@@ -22,8 +14,6 @@ await build({
   platform: 'browser',
   target: 'chrome120',
   outdir: OUT_DIR,
-  // neural-separate and neural-runtime import node: modules only on their Node code paths.
-  external: ['node:*'],
   plugins: [dpdfBindingsPlugin(resolve('vendor/dpdf/dpdf.js'))],
   logLevel: 'info',
 });
@@ -37,11 +27,3 @@ await build({
   outdir: OUT_DIR,
   logLevel: 'info',
 });
-
-const require = createRequire(import.meta.url);
-mkdirSync(join(OUT_DIR, 'ort'), { recursive: true });
-for (const file of ORT_FILES) {
-  const source = require.resolve(`onnxruntime-web/${file}`);
-  copyFileSync(source, join(OUT_DIR, 'ort', basename(source)));
-}
-console.log(`copied ${ORT_FILES.length} onnxruntime-web files to ${OUT_DIR}/ort/`);
