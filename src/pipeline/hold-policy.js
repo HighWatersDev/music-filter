@@ -29,15 +29,19 @@ export function decideHold({
   processed,
   now,
   duration,
+  readyState = HAVE_FUTURE_DATA,
   config = HOLD_CONFIG,
 }) {
   const release = (state) => ({ action: isHeld ? 'resume' : 'none', state });
+  // A video without future data is not advancing, so there is nothing to hold yet. Pausing it then also
+  // stops YouTube from recovering when its first source fails to decode, and it never plays again.
+  const holdAction = isPaused || readyState < HAVE_FUTURE_DATA ? 'none' : 'pause';
   if (failure) return release('error');
   if (playbackRate !== 1) return release('muted');
   if (!hasStream) {
     const waitedSeconds = Math.max(isHeld ? heldSeconds : 0, playRequestedSeconds);
     if (waitedSeconds >= config.noStreamTimeoutSeconds) return { ...release('error'), failure: 'no audio stream found' };
-    return { action: isPaused ? 'none' : 'pause', state: 'waiting' };
+    return { action: holdAction, state: 'waiting' };
   }
 
   const remaining = Number.isFinite(duration) ? Math.max(0, duration - now - config.endSlackSeconds) : Infinity;
@@ -51,7 +55,7 @@ export function decideHold({
   }
   const isReady = ahead >= Math.min(config.playMarginSeconds, remaining);
   if (isReady) return { action: 'none', state: 'filtered' };
-  return isPaused ? { action: 'none', state: 'waiting' } : { action: 'pause', state: 'filtering' };
+  return isPaused ? { action: 'none', state: 'waiting' } : { action: holdAction, state: 'filtering' };
 }
 
 export function canPlayProcessed({ state, isPaused, isSeeking, isAudioRunning, readyState }) {

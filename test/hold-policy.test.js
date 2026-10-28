@@ -115,3 +115,19 @@ test('canPlayProcessed needs a filtered, playing, buffered video and running aud
   assert.equal(canPlayProcessed({ ...ready, isSeeking: true }), false);
   assert.equal(canPlayProcessed({ ...ready, isAudioRunning: false }), false);
 });
+
+test('a video still starting up is not paused, so the site can recover from start-up errors', () => {
+  const startingUp = { ...playing, readyState: 1 };
+  assert.deepEqual(decideHold({ ...startingUp, hasStream: false }), { action: 'none', state: 'waiting' });
+  assert.deepEqual(decideHold({ ...startingUp, processed: [] }), { action: 'none', state: 'filtering' });
+  assert.deepEqual(decideHold({ ...playing, hasStream: false, readyState: 3 }), { action: 'pause', state: 'waiting' });
+  assert.deepEqual(decideHold({ ...playing, readyState: 3 }), { action: 'pause', state: 'filtering' });
+});
+
+test('a video stuck starting up with no stream still ends in the no-stream error', () => {
+  assert.deepEqual(decideHold({ ...playing, hasStream: false, readyState: 1, playRequestedSeconds: 10 }), {
+    action: 'none',
+    state: 'error',
+    failure: 'no audio stream found',
+  });
+});

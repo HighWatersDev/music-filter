@@ -411,6 +411,7 @@ function tick() {
     processed: scheduler.ranges,
     now: video.currentTime,
     duration: video.duration,
+    readyState: video.readyState,
   });
   if (decision.failure) fail(decision.failure);
   else applyHold(decision.action);
