@@ -66,9 +66,24 @@ The loop had two causes. A replay resends the retained bytes oldest first, and t
 
 Fix: the hold policy no longer pauses a video below `HAVE_FUTURE_DATA`, since it is not advancing yet. The original audio stays at level 0 either way. Re-verified on the 1.0.0 store build: 7 of 7 starts with the filter on before play now play, plus an autoplay-next case. YouTube itself takes about 10 s and two decode errors to start on this emulator, the same with the filter off. First filtered audio arrives 2.6 to 3.8 s after YouTube starts playing.
 
+## Real phone: Galaxy A56, Firefox 159 (2026-10-30)
+
+Exynos 1580, 8 cores, Android 16. Store build 1.0.0. The worker is single-threaded because the page is not cross-origin isolated.
+
+| Check | Result |
+|---|---|
+| Model | Switched to DPDFNet-2 on every start. The first 2 s window ran slower than RTF 0.6. |
+| 10 s window | Median 6.35 s (speech) and 6.6 s (BBB), max 7.2 s. RTF 0.58 to 0.65. About 1.6x slower than the M2 Pro emulator. |
+| First play with the filter on | 7 of 7 played. Filtered audio 2.4 to 2.6 s after YouTube starts playing. |
+| 3 minutes per video | Holds only at the start, up to 32 s ready ahead, no reloads, no throttling (thermal status 0, 42 to 45 °C) |
+| Seeks, 1.5x, toggle off, mute safety | Correct. originalLevel 0 across about 4,100 samples. |
+
+It keeps up, but with about 35% headroom on a mid-range phone. A slower phone would run above real time and pause often. Spreading windows across two or three Workers would use the idle cores.
+
 ## Still open
 
-- Real iPhone and real Android phone: speed and behaviour.
+- Real iPhone: speed, and whether YouTube serves it AAC.
+- Low-end Android: probably slower than real time with one Worker.
 - Read-ahead decodes Opus only. An AAC stream fails with "unsupported audio type". Seen once on the iPad simulator.
 - The worker's message lag (p95 5.4 s on the simulator) comes from filtering a whole window without yielding. Only the 5 s replay throttle stops a starved report at the end of a replay from starting another one.
 - The panel names no model in read-ahead until a drop to DPDFNet-2.
