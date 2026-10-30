@@ -1,0 +1,52 @@
+name: Bug report
+description: Something doesn't filter, plays the music, pauses too much, or breaks the video
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you expected, and what you saw or heard instead.
+    validations:
+      required: true
+  - type: input
+    id: video
+    attributes:
+      label: Video link
+      description: The YouTube video, with a timestamp if the problem starts partway through.
+    validations:
+      required: true
+  - type: dropdown
+    id: browser
+    attributes:
+      label: Browser
+      options:
+        - Chrome
+        - Edge
+        - Brave
+        - Firefox (desktop)
+        - Firefox for Android
+        - Safari on iPhone or iPad
+        - Safari on Mac
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: Browser version and Music Filter version
+      placeholder: Firefox 159, Music Filter 0.0.1
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: Device
+      placeholder: Galaxy A56, Android 16 / MacBook Pro M2, macOS 26
+    validations:
+      required: true
+  - type: textarea
+    id: panel
+    attributes:
+      label: Panel message
+      description: The text on the Music Filter button or panel when it went wrong, if any.

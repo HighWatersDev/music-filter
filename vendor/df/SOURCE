@@ -1,9 +1,0 @@
-repo: https://github.com/Rikorose/DeepFilterNet
-commit: d375b2d8309e0935d165700c91da9de862a99c31
-built: 2026-10-24T14:41:47Z
-wasm bytes: 9013611
-model bytes: 7983136
-rustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)
-wasm-pack: wasm-pack 0.15.0
-wasm sha256: f4abbcde9fd40a78220dc55fc920b8f5aa708c0d92ec318f19ca7cced6de56b7
-model sha256: c94d91f70911001c946e0fabb4aa9adc37045f45a03b56008cb0c8244cb63616

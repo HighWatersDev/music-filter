@@ -1,4 +1,4 @@
-# Release checklist, 1.0.0
+# Release checklist
 
 ## Build the packages
 
@@ -16,9 +16,9 @@ Commit before `npm run package`. The Firefox source zip is cut from HEAD.
 
 | Store | Account | Upload | Listing |
 |---|---|---|---|
-| Chrome Web Store | Developer account, one-time $5 fee, 2-step verification on the Google account | `music-filter-chromium-1.0.0.zip` | Copy and answers in `listing.md`. Screenshot `chrome-1-filtering.png`, promo tile `promo-440x280.png`. |
+| Chrome Web Store | Developer account, one-time $5 fee, 2-step verification on the Google account | `music-filter-chromium-<version>.zip` | Copy and answers in `listing.md`. Screenshot `chrome-1-filtering.png`, promo tile `promo-440x280.png`. |
 | Edge Add-ons | Partner Center account, free | Same zip | Same copy |
-| Firefox Add-ons | addons.mozilla.org account, free | `music-filter-firefox-1.0.0.zip` plus `music-filter-source-1.0.0.zip` as the source | Same copy, reviewer notes in `listing.md` |
+| Firefox Add-ons | addons.mozilla.org account, free | `music-filter-firefox-<version>.zip` plus `music-filter-source-<version>.zip` as the source | Same copy, reviewer notes in `listing.md` |
 | Apple App Store | Apple Developer Program, $99 a year | Archive in Xcode and upload, see below | App Store Connect record, copy in `listing.md`, screenshots `iphone-*`, `ipad-*` |
 
 ## Apple steps

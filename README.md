@@ -1,5 +1,7 @@
 # Music Filter
 
+[![CI](https://github.com/HighWatersDev/music-filter/actions/workflows/ci.yml/badge.svg)](https://github.com/HighWatersDev/music-filter/actions/workflows/ci.yml)
+
 A browser extension that removes background music from YouTube videos while they play and keeps the voices. Everything runs on your device. Nothing is uploaded, and no account is needed.
 
 ## Where it runs
@@ -12,6 +14,12 @@ A browser extension that removes background music from YouTube videos while they
 
 Chrome on phones does not support extensions.
 
+![Music Filter on a YouTube video in Chrome](docs/store/screenshots/chrome-1-filtering.png)
+
+## Installing
+
+Store listings for Chrome, Edge, Firefox and Safari are on the way. Until then, build from source and load `extension/` as an unpacked extension (see below).
+
 ## Using it
 
 Open a YouTube video and press **Music filter: OFF** in the top-left corner to turn it on. Press it again to hear the original audio.
@@ -20,9 +28,14 @@ Open a YouTube video and press **Music filter: OFF** in the top-left corner to t
 
 - Speech comes through clearly. Most music is removed, including music under speech. Some can remain at a low level.
 - Sound effects and ambient sound are removed too. It keeps voices only.
+- If filtering fails, the video is muted with a message. The original music never plays while the filter is on.
+
+## Known limitations
+
 - Singing is a voice, so sung vocals still come through.
 - On Safari and Firefox for Android the filter works at normal speed only. At other speeds the video is muted.
-- If filtering fails, the video is muted with a message. The original music never plays while the filter is on.
+- On Safari and Firefox for Android only Opus audio can be filtered. If YouTube serves AAC, the video is muted with "unsupported audio type".
+- Phones filter a few seconds ahead of playback, so the video pauses briefly after it starts and after a seek. Phones slower than a Galaxy A56 may pause more often.
 
 ## How it works
 
@@ -47,7 +60,20 @@ npm run build          # bundles src/ into extension/dist
 npm test
 ```
 
-Load `extension/` as an unpacked extension for development. `npm run package` builds the store packages into `build/store/`.
+Load `extension/` as an unpacked extension for development. `npm run package` builds the store packages into `build/store/`. `npm run test:e2e` runs the browser tests with Playwright.
+
+## Repository layout
+
+| Folder | Contents |
+|---|---|
+| `src/` | Extension source: content scripts, the read-ahead pipeline, Workers and the AudioWorklet |
+| `extension/` | The unpacked extension. `npm run build` writes `dist/` and the model step writes `assets/`. |
+| `native/dpdf/` | Rust crate that runs DPDFNet with tract, built to WebAssembly |
+| `test/` | Unit tests (`node --test`) and browser tests in `test/e2e/` |
+| `tools/listen/` | Offline listening checks on audio files |
+| `tools/store/` | Store screenshot capture |
+| `tools/tiger-bench/` | Benchmark of the DBS-TIGER model in the browser, see `docs/spikes/` |
+| `docs/` | Design notes, test results and store listing copy. [Index](docs/README.md). |
 
 ## Privacy
 
