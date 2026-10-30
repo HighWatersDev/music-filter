@@ -94,6 +94,20 @@ It keeps up, but with about 35% headroom on a mid-range phone. A slower phone wo
 
 Parallel Workers fill the buffer faster, but a single DPDFNet-4 window under contention runs at about 0.9 of real time, so the first windows after a start or seek arrive no sooner. The 1.0.1 ramp was based on the runway and produced uneven sizes. 1.0.2 bases it on the run length and adds a per-window RTF limit of 1. Neither changes the model chosen on the A56.
 
+## Galaxy A56, 1.0.3: quick start and fallback (2026-10-30)
+
+| | 1.0.0 | 1.0.1 | 1.0.3 |
+|---|---|---|---|
+| Held in the first 30 s, BBB | about 10.3 s | 9.7 to 15.7 s | 7.5 to 8.1 s |
+| Held in the first 30 s, speech | 7.6 to 8.4 s | 7.5 to 7.6 s | 4.8 to 5.7 s |
+| Held after a 60 s forward seek | 6.9 to 7.8 s | 9.5 to 10.2 s | 5.4 to 5.9 s |
+| Steady-state holds | none | none | none |
+| Thermal status | 0 | 0 | 1 (light) after 6 minutes of filtering, no slowdown |
+
+- The quick-start windows switch to DPDFNet-4 about 11 to 15 s after a start or seek.
+- A DPDFNet-4 10 s window with 3 Workers busy runs at RTF 1.0 on the A56, right on the per-window limit. 2 of 3 BBB starts fell back to DPDFNet-2 on RTF 1.017 and 1.002.
+- The `behind` fallback never fired.
+
 ## Still open
 
 - Real iPhone: speed, and whether YouTube serves it AAC.
