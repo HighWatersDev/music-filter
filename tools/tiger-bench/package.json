@@ -1,0 +1,13 @@
+{
+  "name": "music-filter-tiger-bench",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "serve": "node serve.mjs",
+    "node-bench": "node node-bench.mjs"
+  },
+  "dependencies": {
+    "onnxruntime-node": "1.30.0",
+    "onnxruntime-web": "1.30.0"
+  }
+}

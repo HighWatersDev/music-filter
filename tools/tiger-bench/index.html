@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TIGER bench</title>
+<style>
+  body { font: 14px/1.4 system-ui, sans-serif; margin: 16px; background: #fff; color: #111; }
+  pre { white-space: pre-wrap; word-break: break-word; font-size: 12px; }
+</style>
+</head>
+<body>
+<h1>DBS-TIGER read-ahead bench</h1>
+<p>Query: <code>model</code>, <code>seconds</code>, <code>ep</code> (wasm or webgpu), <code>threads</code>, <code>workers</code> (e.g. 1,2,3), <code>chunks</code>, <code>isolated=1</code>, <code>close=1</code>.</p>
+<pre id="log"></pre>
+<script type="module" src="bench.js"></script>
+</body>
+</html>
