@@ -39,6 +39,10 @@ Commit before `npm run package`. The Firefox source zip is cut from HEAD.
 
 Read-ahead decodes Opus only. When YouTube serves AAC (`mp4a.40.2`), the panel shows "Can't filter this video: unsupported audio type" and the video stays muted. The iPhone simulator always got Opus. The iPad simulator got AAC once while its video codecs were restricted. Whether real iPhones and iPads get AAC is unknown. Desktop live mode is not affected because it filters the element's output whatever the codec.
 
+## Screenshots to retake
+
+`iphone-*.png` and `ipad-*.png` still show the old floating card from before 0.0.1. Retake them in the simulator before the Apple submission.
+
 ## Review risks
 
 - **YouTube content in screenshots.** All screenshots use Big Buck Bunny (CC BY 3.0) with recommendations hidden. YouTube's own interface still shows.

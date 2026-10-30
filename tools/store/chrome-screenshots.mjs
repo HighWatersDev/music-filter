@@ -24,11 +24,10 @@ try {
     await reject.first().click();
     await page.waitForURL(/youtube\.com\/watch/);
   }
-  await page.waitForSelector('[data-state]');
+  await page.waitForSelector('#music-filter');
   await page.evaluate(() => document.querySelector('video')?.play());
-  await page.getByRole('button', { name: /Music filter/ }).click();
   // YouTube enforces Trusted Types, which blocks waitForFunction, so wait on the attribute through a locator.
-  await page.locator('[data-state="filtered"]').waitFor({ timeout: 60000 });
+  await page.locator('#music-filter[data-state="filtered"]').waitFor({ timeout: 60000 });
   await page.waitForTimeout(8000);
   // Theater mode pushes the recommendation thumbnails, which are other people's work, below the fold.
   await page.locator('video').hover();
@@ -36,8 +35,12 @@ try {
   await page.addStyleTag({ content: '#secondary { visibility: hidden !important }' });
   await page.mouse.move(1270, 790);
   await page.waitForTimeout(3000);
+  // The icon shows with YouTube's controls, so move over the player just before the screenshot.
+  const player = await page.locator('#movie_player').boundingBox();
+  await page.mouse.move(player.x + player.width / 2, player.y + player.height / 2);
+  await page.waitForTimeout(500);
   await page.screenshot({ path: `${OUT}/chrome-1-filtering.png` });
-  console.log(await page.evaluate(() => document.querySelector('[data-state]').textContent));
+  console.log(await page.evaluate(() => document.querySelector('#music-filter').dataset.status));
 
   const icon = readFileSync('design/icon.svg', 'utf8').replace('<svg ', '<svg width="120" height="120" ');
   const tile = await context.newPage();

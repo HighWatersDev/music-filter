@@ -20,6 +20,16 @@ await build({
 });
 
 await build({
+  entryPoints: { popup: 'src/popup/popup.js' },
+  bundle: true,
+  format: 'esm',
+  platform: 'browser',
+  target: 'chrome120',
+  outdir: OUT_DIR,
+  logLevel: 'info',
+});
+
+await build({
   entryPoints: { 'read-ahead': 'src/content/read-ahead.js' },
   bundle: true,
   format: 'iife',

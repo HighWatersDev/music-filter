@@ -29,7 +29,7 @@ await withExtensionPage({ port: PORT, storage: { mf_mode: 'live' } }, async (pag
   assert.ok(model in LIVE_MODELS, `unexpected model ${model}`);
   assert.equal(engine(filtered).model, model);
   assert.ok(engine(filtered).warmupMs[model] > 0, `no warm-up time for ${model}: ${filtered.panel.engine}`);
-  assert.match(await page.textContent('[data-state]'), new RegExp(`Filtered · live, ${LIVE_MODELS[model]}, \\d+ ms delay`));
+  assert.match(await page.getAttribute('#music-filter', 'data-status'), new RegExp(`Filtered · live, ${LIVE_MODELS[model]}, \\d+ ms delay`));
 
   await page.waitForTimeout(2000);
   const playing = await snapshot(page);
@@ -42,7 +42,7 @@ await withExtensionPage({ port: PORT, storage: { mf_mode: 'live' } }, async (pag
   const output = await traceOutputDelay(page);
   console.log('delay from the worklet to the output', output);
   assert.ok(output.maxMs < MAX_OUTPUT_DELAY_MS, `the output buffer grew: ${JSON.stringify(output)}`);
-  const reportedMs = Number((await page.textContent('[data-state]')).match(/(\d+) ms delay/)[1]);
+  const reportedMs = Number((await page.getAttribute('#music-filter', 'data-status')).match(/(\d+) ms delay/)[1]);
   const engineMs = (engine(playing).latencySamples / 48000) * 1000;
   assert.ok(
     Math.abs(reportedMs - engineMs - output.maxMs) <= DELAY_TOLERANCE_MS,

@@ -669,5 +669,8 @@ export function startLiveFilter({ onTooSlowAtStart = null } = {}) {
     if (filter.isEnabled && mutations.some(addsVideo)) tick();
   }).observe(document.documentElement, { childList: true, subtree: true });
   for (const type of ['loadedmetadata', 'play', 'playing', 'pause', 'emptied']) document.addEventListener(type, tick, true);
+  for (const type of ['pointerdown', 'touchend', 'click', 'keydown']) {
+    document.addEventListener(type, () => filter.isEnabled && filter.refresh(), true);
+  }
   setInterval(tick, TICK_MS);
 }

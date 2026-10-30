@@ -1,6 +1,6 @@
 # Privacy policy
 
-Music Filter, last updated 2026-10-27.
+Music Filter, last updated 2026-10-30.
 
 **Music Filter collects no data.** It has no accounts, no analytics, no ads and no server.
 
@@ -17,7 +17,7 @@ The extension makes no network requests of its own. The filtering model and all 
 
 ## Settings
 
-The on/off state lives only in the open tab. Nothing is stored between visits.
+Music Filter remembers one setting, whether the filter is on, in your browser's extension storage on your device. It is never sent anywhere, and removing the extension deletes it.
 
 ## Changes and contact
 

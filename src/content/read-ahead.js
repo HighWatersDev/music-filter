@@ -16,6 +16,8 @@ const LIVE_RETAINED_BYTES = 4 * 1024 * 1024;
 const MAX_STREAMS = 4;
 const OUTPUT_SAMPLE_RATE = 48000;
 const REPLAY_INTERVAL_MS = 5000;
+// Safari starts an AudioContext only from inside one of these.
+const GESTURE_EVENTS = ['pointerdown', 'touchend', 'click', 'keydown'];
 const TICK_EVENTS = ['loadedmetadata', 'play', 'playing', 'seeked', 'ratechange', 'waiting', 'pause', 'ended', 'emptied'];
 
 const isSafari = navigator.vendor === 'Apple Computer, Inc.';
@@ -70,6 +72,13 @@ function startReadAhead(readAheadPanel) {
   retainedLimit = RETAINED_BYTES;
   panel = readAheadPanel;
   setInterval(safeTick, TICK_MS);
+  // Capturing on the document attaches a new video before its first sound, without waiting for the next tick.
+  for (const type of ['loadedmetadata', 'play']) document.addEventListener(type, safeTick, true);
+  for (const type of GESTURE_EVENTS) document.addEventListener(type, resumeOnGesture, true);
+}
+
+function resumeOnGesture() {
+  if (isEnabled && context && context.state !== 'running') context.resume().catch(() => {});
 }
 
 // An element feeds only one MediaElementSource for its lifetime, so read-ahead keeps the live
@@ -363,12 +372,13 @@ async function setEnabled(on) {
     panel.update({ state: 'off', detail: '', originalLevel: 1 });
     return;
   }
+  // With the setting remembered, this can run before the page has a video or a user gesture.
+  // tick attaches the video when it appears, and resumeOnGesture starts the audio.
   const video = pickVideo();
-  if (!video) throw new Error('no video on this page');
   separatorFailure = null;
-  attach(video);
-  panel.update({ state: 'waiting', detail: '', originalLevel: original.currentLevel() });
-  await context.resume();
+  if (video) attach(video);
+  panel.update({ state: 'waiting', detail: '', originalLevel: original?.currentLevel() ?? 0 });
+  context?.resume().catch(() => {});
   if ('audioSession' in navigator) navigator.audioSession.type = 'playback';
   ensureSeparator();
   safeTick();

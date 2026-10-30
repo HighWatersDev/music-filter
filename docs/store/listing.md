@@ -22,8 +22,9 @@ Links used everywhere:
 >
 > How to use it
 > • Open a YouTube video.
-> • Press "Music filter: OFF" in the top-left corner to turn it on.
-> • Press it again to hear the original audio.
+> • It's on as soon as you install it. Open a YouTube video and the music is removed.
+> • To hear the original audio, tap the music-note button in the top-left corner of the player. It shows with YouTube's own controls.
+> • The Music Filter button in the browser toolbar has the same switch and shows the status.
 >
 > What to expect
 > • Speech comes through clearly. Most music is removed, including music under speech.
@@ -45,6 +46,7 @@ Links used everywhere:
 | Category | Accessibility |
 | Language | English |
 | Single purpose | Removes music from the audio of YouTube videos while they play. |
+| `storage` justification | Remembers whether the filter is on, so the user doesn't have to turn it on for every video. Stored on the device only. |
 | Host permission justification (`youtube.com`, `m.youtube.com`) | The content scripts read the audio YouTube streams to the page so the extension can filter out music and play the filtered audio in sync with the video. It does nothing on other sites. |
 | Remote code | No. All code and the model ship in the package. |
 | Data usage | Collects none of the listed data types. Certify all three disclosures. |
@@ -72,7 +74,7 @@ Same package and copy as Chrome. Category: Accessibility.
 > The bundled JavaScript in dist/ is built with esbuild from src/ (npm run build). It is not minified.
 > assets/dpdf_bg.wasm is compiled from the Rust crate in native/dpdf (npm run build:dpdf). The pinned toolchain is in native/dpdf/rust-toolchain.toml, and vendor/dpdf/SOURCE records the expected sha256.
 > assets/dpdfnet4.onnx and dpdfnet2.onnx are the Apache-2.0 DPDFNet models from huggingface.co/Ceva-IP/DPDFNet at a pinned revision. scripts/fetch-models.sh downloads them and checks their sha256.
-> To test: open any YouTube video with talking over background music, then press "Music filter: OFF" at the top left.
+> To test: open any YouTube video with talking over background music. The filter is on by default. Move the pointer over the player and click the music-note button at the top left to compare with the original audio. The toolbar button has the same switch.
 
 ## Apple App Store (iPhone, iPad, Mac)
 
@@ -103,5 +105,5 @@ Same package and copy as Chrome. Category: Accessibility.
 
 **App Review notes:**
 > Music Filter is a Safari Web Extension. The app only explains how to turn the extension on.
-> To test: enable Music Filter in Settings › Apps › Safari › Extensions and allow it for youtube.com. Open https://m.youtube.com in Safari, play any video with talking over background music, and tap "Music filter: OFF" at the top left. The video pauses for a moment while the first seconds are filtered, then plays with the music removed.
+> To test: enable Music Filter in Settings › Apps › Safari › Extensions and allow it for youtube.com. Open https://m.youtube.com in Safari, and play any video with talking over background music. The filter is on by default. The video pauses for a moment while the first seconds are filtered, then plays with the music removed. Tap the video to show its controls, then the music-note button at the top left to turn the filter off.
 > The extension collects no data and makes no network requests of its own. It is open source: https://github.com/HighWatersDev/music-filter

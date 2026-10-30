@@ -37,11 +37,12 @@ export async function withExtensionPage({ port, storage }, run) {
     });
     const page = context.pages()[0] ?? (await context.newPage());
     await page.goto(`${base}/mse.html`);
+    await turnOffRememberedFilter(page);
     await page.evaluate((entries) => {
       for (const [key, value] of Object.entries(entries)) localStorage.setItem(key, value);
     }, storage);
     await page.reload();
-    await page.waitForSelector('[data-state]');
+    await page.waitForSelector('#music-filter');
     await run(page);
   } finally {
     await context?.close();
@@ -54,7 +55,7 @@ export const snapshot = (page) =>
   page.evaluate(() => {
     const video = document.querySelector('video');
     return {
-      panel: { ...document.querySelector('[data-state]')?.dataset },
+      panel: { ...document.querySelector('#music-filter')?.dataset },
       paused: video.paused,
       currentTime: video.currentTime,
       playbackRate: video.playbackRate,
@@ -65,7 +66,7 @@ export async function waitFor(page, label, isDone, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const current = await snapshot(page);
-    if (current.panel.state === 'error') throw new Error(`panel error: ${await page.textContent('[data-state]')}`);
+    if (current.panel.state === 'error') throw new Error(`panel error: ${await page.getAttribute('#music-filter', 'data-status')}`);
     if (isDone(current)) return current;
     await page.waitForTimeout(100);
   }
@@ -73,11 +74,23 @@ export async function waitFor(page, label, isDone, timeoutMs) {
 }
 
 export const video = (page, action) => page.evaluate(action);
-export const toggle = (page) => page.getByRole('button', { name: /Music filter/ }).click();
+// The icon shows only after pointer activity over the player, as YouTube's controls do.
+export async function toggle(page) {
+  await page.hover('video');
+  await page.getByRole('button', { name: /Music filter/ }).click();
+}
+
+// The filter is on by default and the choice is remembered, so each test starts by turning it off.
+async function turnOffRememberedFilter(page) {
+  await page.waitForSelector('#music-filter[data-ready]');
+  const isOn = await page.evaluate(() => document.querySelector('#music-filter button').getAttribute('aria-pressed') === 'true');
+  if (isOn) await toggle(page);
+  await page.waitForFunction(() => document.querySelector('#music-filter').dataset.state === 'off');
+}
 
 export async function watchPanel(page) {
   await page.evaluate(() => {
-    const root = document.querySelector('[data-state]');
+    const root = document.querySelector('#music-filter');
     window.__seen = { states: [], originalLevelsWhileOn: new Set(), pauses: 0 };
     new MutationObserver(() => {
       __seen.states.push(root.dataset.state);

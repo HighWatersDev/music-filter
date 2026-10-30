@@ -22,7 +22,10 @@ Store listings for Chrome, Edge, Firefox and Safari are on the way. Until then, 
 
 ## Using it
 
-Open a YouTube video and press **Music filter: OFF** in the top-left corner to turn it on. Press it again to hear the original audio.
+The filter is on by default and remembers your choice.
+
+- **In the player:** a round music-note button shows in the top-left corner whenever YouTube shows its own controls. Tap or click it to turn the filter on or off.
+- **From the browser:** click the Music Filter button in the toolbar for an on/off switch and the current status. On phones it's in the browser menu: ⋮ › Extensions in Firefox, the aA menu in Safari.
 
 ## What to expect
 

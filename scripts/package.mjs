@@ -5,7 +5,7 @@ import { join } from 'node:path';
 const OUT = 'build/store';
 const DEV_ONLY_MATCH = 'http://localhost/*';
 const FIREFOX_ID = 'music-filter@highwatersdev';
-const REQUIRED = ['extension/dist/read-ahead.js', 'extension/dist/separator-worker.js', 'extension/dist/filter-worker.js', 'extension/assets/dpdf_bg.wasm',
+const REQUIRED = ['extension/dist/read-ahead.js', 'extension/dist/separator-worker.js', 'extension/dist/filter-worker.js', 'extension/dist/popup.js', 'extension/popup.html', 'extension/assets/dpdf_bg.wasm',
   'extension/assets/dpdfnet4.onnx', 'extension/assets/dpdfnet2.onnx', 'extension/icons/icon-128.png'];
 
 for (const file of REQUIRED) {
