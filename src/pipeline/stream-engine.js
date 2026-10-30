@@ -20,6 +20,8 @@ export const DEFAULT_CONFIG = {
   // fell from 0.268 to 0.252. The join at 19 s sits near -17 dB whatever the context length.
   warmUpBeforeSeconds: 1,
   starvedRearmSeconds: 1,
+  maxInFlight: 1,
+  rampWindows: false,
 };
 
 // An Opus packet is at most 120 ms, and the decoder discards up to 80 ms of pre-roll after a gap, so a
@@ -63,14 +65,29 @@ class PacketQueue {
   }
 }
 
-export function createSerialQueue() {
-  let tail = Promise.resolve();
-  return (task) => {
-    const run = tail.then(task);
-    tail = run.catch(() => {});
-    return run;
+export function createTaskPool(limit) {
+  let active = 0;
+  const waiting = [];
+  const startNext = () => {
+    if (active >= limit || waiting.length === 0) return;
+    const { task, resolve, reject } = waiting.shift();
+    active += 1;
+    Promise.resolve()
+      .then(task)
+      .then(resolve, reject)
+      .finally(() => {
+        active -= 1;
+        startNext();
+      });
   };
+  return (task) =>
+    new Promise((resolve, reject) => {
+      waiting.push({ task, resolve, reject });
+      startNext();
+    });
 }
+
+export const createSerialQueue = () => createTaskPool(1);
 
 export class StreamEngine {
   constructor({
@@ -108,7 +125,7 @@ export class StreamEngine {
     this.activeSegment = null;
     this.timeline = new PcmTimeline({ channels: 2, pageSamples: this.config.sampleRate });
     this.processed = [];
-    this.inFlight = null;
+    this.inFlightWindows = [];
     this.halted = null;
     this.playhead = 0;
     this.isPlaying = false;
@@ -149,6 +166,10 @@ export class StreamEngine {
     this.processed = trimAfter(this.processed, this.playhead + (lookaheadSeconds + windowSeconds) * rate);
     this.drainPackets();
     this.pump();
+  }
+
+  get inFlight() {
+    return this.inFlightWindows[0] ?? null;
   }
 
   isIdle() {
@@ -282,12 +303,16 @@ export class StreamEngine {
     this.timeline.write(start, span.channelData);
   }
 
+  processedOrInFlight() {
+    return this.inFlightWindows.reduce((ranges, { start, end }) => addRange(ranges, start, end), this.processed);
+  }
+
   plan() {
     const { sampleRate: rate, ...c } = this.config;
     return planNextWindow({
       playhead: this.playhead,
       decoded: this.timeline.ranges,
-      processed: this.processed,
+      processed: this.processedOrInFlight(),
       firstWindow: c.firstWindowSeconds * rate,
       window: c.windowSeconds * rate,
       overlap: c.overlapSeconds * rate,
@@ -295,6 +320,7 @@ export class StreamEngine {
       lookahead: c.lookaheadSeconds * rate,
       urgency: c.urgencySeconds * rate,
       maxStartGap: c.maxStartGapSeconds * rate,
+      ramp: c.rampWindows,
     });
   }
 
@@ -329,7 +355,7 @@ export class StreamEngine {
     const starved = isStarved({
       playhead: this.playhead,
       decoded: this.timeline.ranges,
-      processed: this.processed,
+      processed: this.processedOrInFlight(),
       lookahead: this.config.lookaheadSeconds * rate,
       maxStartGap: this.config.maxStartGapSeconds * rate,
     });
@@ -339,25 +365,32 @@ export class StreamEngine {
   }
 
   pump() {
-    if (this.inFlight || this.halted) return;
-    const window = this.plan();
-    if (!window) {
-      this.reportIfStarved();
-      return;
+    while (!this.halted) {
+      const window = this.plan();
+      if (!window) {
+        this.reportIfStarved();
+        return;
+      }
+      if (this.inFlightWindows.length >= this.config.maxInFlight) return;
+      this.dispatch(window);
     }
+  }
+
+  dispatch(window) {
     const pcm = this.readWindow(window);
     const contextBefore = this.readContextBefore(window);
-
     const { generation } = this;
     const rate = this.config.sampleRate;
     let startedAt;
-    this.inFlight = window;
+    this.inFlightWindows.push(window);
     this.enqueue(() => {
+      if (generation !== this.generation) return null;
       startedAt = Date.now();
       return this.separate(pcm[0], pcm[1], rate, { contextBefore });
     })
-      .then(([left, right]) => {
+      .then((separated) => {
         if (generation !== this.generation) return;
+        const [left, right] = separated;
         this.processed = addRange(this.processed, window.start, window.end);
         this.onWindow({ startSeconds: window.start / rate, sampleRate: rate, left, right });
         this.onStatus({
@@ -375,7 +408,7 @@ export class StreamEngine {
       })
       .finally(() => {
         if (generation !== this.generation) return;
-        this.inFlight = null;
+        this.inFlightWindows = this.inFlightWindows.filter((w) => w !== window);
         this.pump();
       });
   }

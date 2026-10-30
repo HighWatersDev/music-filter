@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createReadAheadFilters, nextReadAheadModel, windowRtf } from '../src/separator/read-ahead-filters.js';
+import { createModelPolicy, createReadAheadFilters, nextReadAheadModel, windowRtf } from '../src/separator/read-ahead-filters.js';
 
 const RATE = 48000;
 const HOP = 160;
@@ -43,8 +43,7 @@ function fakeRuntimes({ costMs = { dpdfnet4: 0.2, dpdfnet2: 0.1 }, poisoned = ne
 }
 
 const tone = (seconds) => Float32Array.from({ length: seconds * RATE }, (_, i) => 0.1 * Math.sin(i / 10));
-const run = (filters, seconds, contextSeconds = 0) =>
-  filters.filter(tone(seconds), tone(seconds), RATE, contextSeconds ? { contextBefore: [tone(contextSeconds), tone(contextSeconds)] } : {});
+const run = (filters, seconds, model = 'dpdfnet4') => filters.filter(tone(seconds), tone(seconds), RATE, { model });
 
 test('the RTF of a window counts the context it warmed up on', () => {
   assert.equal(windowRtf({ computeMs: 700, samples: 2 * RATE, sampleRate: RATE }), 0.35);
@@ -77,71 +76,98 @@ test('without an error the instance and the engine are reused across windows', a
   assert.equal(fake.runtimes[0].engines.length, 1);
 });
 
-test('a slow first window switches later windows to DPDFNet-2 and only then loads its bytes', async () => {
-  const fake = fakeRuntimes({ costMs: { dpdfnet4: 7, dpdfnet2: 3 } });
-  const changes = [];
-  const filters = createReadAheadFilters({
-    instantiate: fake.instantiate,
-    fetchModel: fake.fetchModel,
-    now: fake.clock.now,
-    onModelChange: (change) => changes.push(change),
-  });
+test('a request for another model frees the current engine and only then loads the new bytes', async () => {
+  const fake = fakeRuntimes();
+  const filters = createReadAheadFilters({ instantiate: fake.instantiate, fetchModel: fake.fetchModel });
   await run(filters, 2);
   assert.deepEqual(fake.fetched, ['dpdfnet4']);
-  assert.equal(filters.model, 'dpdfnet2');
-  assert.equal(changes.length, 1);
-  assert.equal(changes[0].model, 'dpdfnet2');
-  assert.ok(changes[0].rtf > 0.6, `rtf ${changes[0].rtf}`);
-  assert.equal(fake.runtimes[0].engines[0].freed, true, 'DPDFNet-4 is freed');
-
-  await run(filters, 2);
+  await run(filters, 2, 'dpdfnet2');
   assert.deepEqual(fake.fetched, ['dpdfnet4', 'dpdfnet2']);
+  assert.equal(fake.runtimes[0].engines[0].freed, true, 'DPDFNet-4 is freed');
   assert.equal(fake.runtimes[0].engines[1].model, 'dpdfnet2');
+  assert.ok(fake.runtimes[0].engines[1].hops > 0);
 });
 
-test('a fast first window keeps DPDFNet-4 and never loads DPDFNet-2', async () => {
-  const fake = fakeRuntimes({ costMs: { dpdfnet4: 1, dpdfnet2: 1 } });
-  const filters = createReadAheadFilters({ instantiate: fake.instantiate, fetchModel: fake.fetchModel, now: fake.clock.now });
-  await run(filters, 2);
-  await run(filters, 2);
-  assert.equal(filters.model, 'dpdfnet4');
-  assert.deepEqual(fake.fetched, ['dpdfnet4']);
-});
-
-test('only the first window is judged', async () => {
-  const costMs = { dpdfnet4: 1, dpdfnet2: 1 };
-  const fake = fakeRuntimes({ costMs });
-  const filters = createReadAheadFilters({ instantiate: fake.instantiate, fetchModel: fake.fetchModel, now: fake.clock.now });
-  await run(filters, 2);
-  costMs.dpdfnet4 = 9;
-  await run(filters, 2);
-  assert.equal(filters.model, 'dpdfnet4');
-});
-
-test('the context counts toward the audio duration of the first window', async () => {
-  const fake = fakeRuntimes({ costMs: { dpdfnet4: 4, dpdfnet2: 1 } });
-  const filters = createReadAheadFilters({ instantiate: fake.instantiate, fetchModel: fake.fetchModel, now: fake.clock.now });
-  await run(filters, 1, 1);
-  assert.equal(filters.model, 'dpdfnet4', 'about 0.4 of real time over the window and its context');
-});
-
-test('after a switch to DPDFNet-2 a fresh instance after an error keeps DPDFNet-2', async () => {
-  const fake = fakeRuntimes({ costMs: { dpdfnet4: 7, dpdfnet2: 3 } });
-  const filters = createReadAheadFilters({ instantiate: fake.instantiate, fetchModel: fake.fetchModel, now: fake.clock.now });
-  await run(filters, 2);
-  fake.runtimes[0].createEngine = () => {
-    throw new Error('unreachable executed');
-  };
-  await assert.rejects(run(filters, 2), /unreachable/);
-  await run(filters, 2);
+test('a fresh instance after an error builds only the model that was asked for', async () => {
+  const poisoned = new Set();
+  const fake = fakeRuntimes({ poisoned });
+  const filters = createReadAheadFilters({ instantiate: fake.instantiate, fetchModel: fake.fetchModel });
+  await run(filters, 2, 'dpdfnet2');
+  poisoned.add(1);
+  await assert.rejects(run(filters, 2, 'dpdfnet2'), /recursive use/);
+  await run(filters, 2, 'dpdfnet2');
   assert.equal(fake.runtimes.length, 2);
   assert.deepEqual(fake.runtimes[1].engines.map((engine) => engine.model), ['dpdfnet2']);
 });
 
-test('loading is reported only while the current model has no engine yet', async () => {
+test('load prepares a model before the first window', async () => {
   const fake = fakeRuntimes();
-  const filters = createReadAheadFilters({ instantiate: fake.instantiate, fetchModel: fake.fetchModel, now: fake.clock.now });
-  assert.equal(filters.isLoading, true);
-  await filters.load();
-  assert.equal(filters.isLoading, false);
+  const filters = createReadAheadFilters({ instantiate: fake.instantiate, fetchModel: fake.fetchModel });
+  await filters.load('dpdfnet4');
+  assert.deepEqual(fake.fetched, ['dpdfnet4']);
+  await run(filters, 1);
+  assert.equal(fake.runtimes[0].engines.length, 1);
+});
+
+const observed = (seconds, computeSeconds, model = 'dpdfnet4', isWarm = true) => ({
+  model,
+  isWarm,
+  computeMs: computeSeconds * 1000,
+  samples: seconds * RATE,
+  sampleRate: RATE,
+});
+
+test('the model policy judges the first window of at least 5 s, counting its context', () => {
+  const changes = [];
+  const policy = createModelPolicy({ workers: 1, onModelChange: (change) => changes.push(change) });
+  policy.observe(observed(2, 3.5));
+  assert.equal(policy.model, 'dpdfnet4', 'a cold 2 s first window is not judged');
+  policy.observe(observed(11, 7.7));
+  assert.equal(policy.model, 'dpdfnet2');
+  assert.equal(changes.length, 1);
+  assert.equal(changes[0].model, 'dpdfnet2');
+  assert.ok(Math.abs(changes[0].rtf - 0.7) < 1e-9);
+});
+
+test('the model policy divides the RTF by the number of workers', () => {
+  const shared = createModelPolicy({ workers: 3 });
+  shared.observe(observed(11, 11 * 0.9));
+  assert.equal(shared.model, 'dpdfnet4');
+  const alone = createModelPolicy({ workers: 1 });
+  alone.observe(observed(11, 11 * 0.9));
+  assert.equal(alone.model, 'dpdfnet2');
+});
+
+test('only the first judged window counts, and windows from another model are ignored', () => {
+  const policy = createModelPolicy({ workers: 1 });
+  policy.observe(observed(11, 20, 'dpdfnet2'));
+  assert.equal(policy.model, 'dpdfnet4');
+  policy.observe(observed(11, 3));
+  policy.observe(observed(11, 20));
+  assert.equal(policy.model, 'dpdfnet4');
+});
+
+test('a cold call into a fresh instance is never judged', () => {
+  const policy = createModelPolicy({ workers: 1 });
+  policy.observe(observed(11, 20, 'dpdfnet4', false));
+  assert.equal(policy.model, 'dpdfnet4');
+  policy.observe(observed(11, 3));
+  assert.equal(policy.model, 'dpdfnet4');
+});
+
+test('one window slower than real time moves to DPDFNet-2 however many workers share the load', () => {
+  const policy = createModelPolicy({ workers: 3 });
+  policy.observe(observed(11, 11 * 1.2));
+  assert.equal(policy.model, 'dpdfnet2');
+});
+
+test('a model load that arrives during a window does not delay it or get thrown away', async () => {
+  const fake = fakeRuntimes();
+  const filters = createReadAheadFilters({ instantiate: fake.instantiate, fetchModel: fake.fetchModel });
+  await run(filters, 1);
+  const loading = filters.load('dpdfnet2');
+  await run(filters, 1);
+  await loading;
+  await run(filters, 1, 'dpdfnet2');
+  assert.deepEqual(fake.fetched, ['dpdfnet4', 'dpdfnet2']);
 });

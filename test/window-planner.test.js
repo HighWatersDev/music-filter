@@ -117,3 +117,30 @@ test('not starved while enough processed audio is ahead', () => {
 test('decoded audio that ends ahead of the playhead is not starvation', () => {
   assert.equal(isStarved({ ...starving, playhead: 10 * S, processed: [[10 * S, 20 * S]], decoded: [[0, 25 * S]] }), false);
 });
+
+test('with ramp, a continuing window is twice the runway, between the first window and the full window', () => {
+  const ramp = { ...base, firstWindow: 2 * S, ramp: true };
+  const decoded = [[0, 60 * S]];
+  assert.deepEqual(planNextWindow({ ...ramp, playhead: 0, decoded, processed: [[0, 2 * S]] }), { start: 1 * S, end: 5 * S });
+  assert.deepEqual(planNextWindow({ ...ramp, playhead: 0, decoded, processed: [[0, 5 * S]] }), { start: 4 * S, end: 14 * S });
+  assert.deepEqual(planNextWindow({ ...ramp, playhead: 10 * S, decoded, processed: [[0, 30 * S]] }), { start: 29 * S, end: 39 * S });
+  assert.deepEqual(planNextWindow({ ...ramp, playhead: 0, decoded, processed: [[0, 0.5 * S]] }), { start: 0, end: 2 * S });
+});
+
+test('ramp follows the length of the processed run, so steady play keeps full windows when the runway dips', () => {
+  const ramp = { ...base, firstWindow: 2 * S, ramp: true };
+  const decoded = [[0, 90 * S]];
+  assert.deepEqual(planNextWindow({ ...ramp, playhead: 50 * S, decoded, processed: [[20 * S, 50.8 * S]] }), {
+    start: 49.8 * S,
+    end: 59.8 * S,
+  });
+});
+
+test('ramp starts over after a seek past the processed audio', () => {
+  const ramp = { ...base, firstWindow: 2 * S, ramp: true };
+  const decoded = [[0, 90 * S]];
+  assert.deepEqual(planNextWindow({ ...ramp, playhead: 40 * S, decoded, processed: [[0, 30 * S], [40 * S, 42 * S]] }), {
+    start: 41 * S,
+    end: 45 * S,
+  });
+});

@@ -8,6 +8,7 @@ await build({
   entryPoints: {
     'separator-frame': 'src/separator/frame.js',
     'separator-worker': 'src/separator/worker.js',
+    'filter-worker': 'src/separator/filter-worker.js',
   },
   bundle: true,
   format: 'esm',

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Music Filter",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "description": "Removes background music from YouTube videos and keeps the voices. Runs on your device. Nothing is uploaded.",
   "icons": {
     "16": "icons/icon-16.png",
@@ -44,7 +44,8 @@
         "assets/dpdfnet2.onnx",
         "separator.html",
         "dist/separator-frame.js",
-        "dist/separator-worker.js"
+        "dist/separator-worker.js",
+        "dist/filter-worker.js"
       ],
       "matches": [
         "https://www.youtube.com/*",

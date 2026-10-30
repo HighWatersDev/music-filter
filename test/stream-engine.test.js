@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { createSerialQueue, StreamEngine } from '../src/pipeline/stream-engine.js';
+import { createSerialQueue, createTaskPool, StreamEngine } from '../src/pipeline/stream-engine.js';
 
 const bytes = new Uint8Array(readFileSync(new URL('./fixtures/tone-12s.webm', import.meta.url)));
 const long = new Uint8Array(readFileSync(new URL('./fixtures/tone-60s.webm', import.meta.url)));
@@ -619,4 +619,139 @@ test('a replay that ends with no audio near the playhead reports starved once', 
   await settle(engine);
   engine.setPlayhead(40, true);
   assert.deepEqual(starvedAt(statuses), [40]);
+});
+
+const nextTurn = () => new Promise((resolve) => setTimeout(resolve, 5));
+
+test('a task pool runs at most its limit at once and starts a queued task when a slot frees', async () => {
+  const run = createTaskPool(2);
+  let active = 0;
+  let peak = 0;
+  const releases = [];
+  const task = () => {
+    active += 1;
+    peak = Math.max(peak, active);
+    return new Promise((resolve) =>
+      releases.push(() => {
+        active -= 1;
+        resolve();
+      }),
+    );
+  };
+  const runs = [run(task), run(task), run(task)];
+  await nextTurn();
+  assert.equal(releases.length, 2);
+  releases.shift()();
+  await nextTurn();
+  assert.equal(releases.length, 2);
+  releases.splice(0).forEach((release) => release());
+  await Promise.all(runs);
+  assert.equal(peak, 2);
+});
+
+test('a rejected task frees its slot in the pool', async () => {
+  const run = createTaskPool(1);
+  await assert.rejects(run(() => Promise.reject(new Error('trap'))), /trap/);
+  assert.equal(await run(() => 'next'), 'next');
+});
+
+function manualSeparator() {
+  const calls = [];
+  const separate = (left, right) =>
+    new Promise((resolve) => calls.push({ seconds: left.length / 48000, resolve: () => resolve([left, right]) }));
+  return { calls, separate };
+}
+
+test('with maxInFlight 3, three overlapping windows are separated at once', async () => {
+  const { calls, separate } = manualSeparator();
+  const { engine } = startEngine({ separate, enqueue: createTaskPool(3), config: { maxInFlight: 3 } });
+  engine.pushChunk(long);
+  engine.setPlayhead(0, true);
+  await engine.ready;
+  await nextTurn();
+  assert.equal(calls.length, 3);
+  const starts = engine.inFlightWindows.map((w) => Math.round(w.start / 48000));
+  assert.deepEqual(starts, [0, 1, 10]);
+  assert.deepEqual(calls.map((c) => Math.round(c.seconds)), [2, 10, 10]);
+});
+
+test('windows are emitted as they finish, and processed is contiguous once all finish', async () => {
+  const { calls, separate } = manualSeparator();
+  const { engine, windows } = startEngine({ separate, enqueue: createTaskPool(3), config: { maxInFlight: 3, lookaheadSeconds: 15 } });
+  engine.pushChunk(long);
+  engine.setPlayhead(0, true);
+  await engine.ready;
+  await nextTurn();
+  calls[2].resolve();
+  await nextTurn();
+  calls[1].resolve();
+  await nextTurn();
+  calls[0].resolve();
+  await nextTurn();
+  assert.deepEqual(windows.slice(0, 3).map((w) => Math.round(w.startSeconds)), [10, 1, 0]);
+  assert.deepEqual(engine.processed, [[0, 20 * 48000]]);
+});
+
+test('a reset discards every window in flight', async () => {
+  const { calls, separate } = manualSeparator();
+  const { engine, windows } = startEngine({ separate, enqueue: createTaskPool(3), config: { maxInFlight: 3 } });
+  engine.pushChunk(long);
+  engine.setPlayhead(0, true);
+  await engine.ready;
+  await nextTurn();
+  engine.reset();
+  calls.forEach((call) => call.resolve());
+  await nextTurn();
+  assert.deepEqual(windows, []);
+  assert.equal(engine.inFlightWindows.length, 0);
+});
+
+test('with three windows in flight a long stream plays through without starving, with contiguous windows', async () => {
+  const config = { keepBehindSeconds: 5, keepAheadSeconds: 10, lookaheadSeconds: 5, windowSeconds: 4, maxInFlight: 3, rampWindows: true };
+  const { engine, windows, statuses } = startEngine({ config, enqueue: createTaskPool(3) });
+  engine.pushChunk(long);
+  await playThrough(engine, 0, 58);
+  assert.deepEqual(starvedAt(statuses), []);
+  const sorted = [...windows].sort((a, b) => a.startSeconds - b.startSeconds);
+  assertContiguous(sorted, 0, 59.9);
+});
+
+test('with windows in flight elsewhere, a seek to audio nobody has reports starved without waiting for them', async () => {
+  const { calls, separate } = manualSeparator();
+  const { engine, statuses } = startEngine({ separate, enqueue: createTaskPool(3), config: { maxInFlight: 3 } });
+  engine.pushChunk(longInit);
+  engine.pushChunk(longClustersFrom(0, 5));
+  engine.setPlayhead(0, true);
+  await engine.ready;
+  await nextTurn();
+  assert.equal(calls.length, 3);
+  engine.setPlayhead(55, true);
+  assert.deepEqual(starvedAt(statuses), [55]);
+});
+
+test('a window in flight at the playhead is not starvation', async () => {
+  const { calls, separate } = manualSeparator();
+  const { engine, statuses } = startEngine({ separate, enqueue: createTaskPool(3), config: { maxInFlight: 3 } });
+  engine.pushChunk(long);
+  engine.setPlayhead(0, true);
+  await engine.ready;
+  await nextTurn();
+  engine.setPlayhead(0.5, true);
+  assert.equal(calls.length, 3);
+  assert.deepEqual(starvedAt(statuses), []);
+});
+
+test('windows still queued when their engine is reset never reach the separator', async () => {
+  const { calls, separate } = manualSeparator();
+  const enqueue = createTaskPool(1);
+  const { engine } = startEngine({ separate, enqueue, config: { maxInFlight: 3 } });
+  engine.pushChunk(long);
+  engine.setPlayhead(0, true);
+  await engine.ready;
+  await nextTurn();
+  assert.equal(calls.length, 1);
+  engine.reset();
+  calls[0].resolve();
+  await nextTurn();
+  assert.equal(calls.length, 1);
 });

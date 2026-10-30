@@ -80,6 +80,20 @@ Exynos 1580, 8 cores, Android 16. Store build 1.0.0. The worker is single-thread
 
 It keeps up, but with about 35% headroom on a mid-range phone. A slower phone would run above real time and pause often. Spreading windows across two or three Workers would use the idle cores.
 
+## Galaxy A56 with 3 filter Workers (1.0.1, 2026-10-30)
+
+| | 1.0.0, 1 Worker, DPDFNet-2 | 1.0.1, 3 Workers, DPDFNet-4 |
+|---|---|---|
+| 10 s window compute, median | 6.35 to 6.6 s | 9.5 to 9.8 s (the 3 Workers share the CPU) |
+| Audio filtered per second while filling | 1.3 to 1.45 s | 1.4 to 2 s |
+| Time to 28 s ready ahead | 62 to 104 s | 23 to 40 s |
+| Holds in the first 30 s after a start | 8.4 to 10.3 s | 7.5 to 15.7 s |
+| Holds after a 60 s forward seek | 7 to 8 s | 9.5 to 10 s |
+| Steady-state holds | none | none |
+| AP temperature | 41.6 to 44.6 °C | 39 to 47.2 °C, no throttling |
+
+Parallel Workers fill the buffer faster, but a single DPDFNet-4 window under contention runs at about 0.9 of real time, so the first windows after a start or seek arrive no sooner. The 1.0.1 ramp was based on the runway and produced uneven sizes. 1.0.2 bases it on the run length and adds a per-window RTF limit of 1. Neither changes the model chosen on the A56.
+
 ## Still open
 
 - Real iPhone: speed, and whether YouTube serves it AAC.

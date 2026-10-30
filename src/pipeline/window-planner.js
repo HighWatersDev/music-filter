@@ -43,6 +43,7 @@ export function planNextWindow({
   lookahead,
   urgency,
   maxStartGap,
+  ramp = false,
 }) {
   const processedEnd = processedRunEnd(processed, playhead, maxStartGap);
   const runway = processedEnd - playhead;
@@ -53,7 +54,11 @@ export function planNextWindow({
   const start = nextRangeStart(decoded, anchor);
   if (start === null || start - anchor > maxStartGap) return null;
 
-  const target = start + (continuing ? window : firstWindow);
+  // After a start or a seek the processed run is short, and shorter windows finish sooner, which shortens the
+  // holds. The length follows the run, not the runway, so a dip in steady play keeps full windows.
+  const runLength = processedEnd - bridgedStart(processed, processedEnd, maxStartGap);
+  const continuingLength = ramp ? Math.min(window, Math.max(firstWindow, 2 * runLength)) : window;
+  const target = start + (continuing ? continuingLength : firstWindow);
   const decodedEnd = bridgedEnd(decoded, start, maxStartGap);
   if (decodedEnd >= target) return { start, end: target };
 
