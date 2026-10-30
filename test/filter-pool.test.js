@@ -15,6 +15,11 @@ function fakeWorkers(count, respond) {
   return { seen, ports: ports.map(({ port }) => port), close: () => ports.forEach(({ close }) => close()) };
 }
 
+async function waitUntil(isDone) {
+  for (let i = 0; i < 200 && !isDone(); i++) await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.ok(isDone(), 'condition never became true');
+}
+
 const request = (n) => ({ model: 'dpdfnet4', sampleRate: 48000, left: new Float32Array([n]), right: new Float32Array([n]) });
 
 test('requests go to idle workers, and a finished worker takes the next request', async () => {
@@ -24,14 +29,14 @@ test('requests go to idle workers, and a finished worker takes the next request'
   assert.equal(pool.size, 2);
   const first = pool.run(request(1));
   const second = pool.run(request(2));
-  await new Promise((resolve) => setTimeout(resolve, 10));
+  await waitUntil(() => workers.seen.length === 2);
   assert.deepEqual(workers.seen.map((m) => m.index), [0, 1]);
   held[1]();
   const done = await second;
   assert.equal(done.left[0], 2);
   assert.equal(done.computeMs, 6);
   const third = pool.run(request(3));
-  await new Promise((resolve) => setTimeout(resolve, 10));
+  await waitUntil(() => workers.seen.length === 3);
   assert.equal(workers.seen.at(-1).index, 1, 'the worker that finished takes the third request');
   held[0]();
   held[2]();
@@ -54,7 +59,7 @@ test('a worker error rejects only its own request and the worker stays usable', 
 test('load reaches every worker', async () => {
   const workers = fakeWorkers(3, () => {});
   createFilterPool(workers.ports).load('dpdfnet2');
-  await new Promise((resolve) => setTimeout(resolve, 10));
+  await waitUntil(() => workers.seen.length === 3);
   assert.deepEqual(workers.seen.map((m) => [m.index, m.type, m.model]), [[0, 'load', 'dpdfnet2'], [1, 'load', 'dpdfnet2'], [2, 'load', 'dpdfnet2']]);
   workers.close();
 });

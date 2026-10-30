@@ -76,16 +76,15 @@ test('without an error the instance and the engine are reused across windows', a
   assert.equal(fake.runtimes[0].engines.length, 1);
 });
 
-test('a request for another model frees the current engine and only then loads the new bytes', async () => {
+test('windows can alternate between models, and each model is fetched and built once', async () => {
   const fake = fakeRuntimes();
   const filters = createReadAheadFilters({ instantiate: fake.instantiate, fetchModel: fake.fetchModel });
-  await run(filters, 2);
-  assert.deepEqual(fake.fetched, ['dpdfnet4']);
   await run(filters, 2, 'dpdfnet2');
-  assert.deepEqual(fake.fetched, ['dpdfnet4', 'dpdfnet2']);
-  assert.equal(fake.runtimes[0].engines[0].freed, true, 'DPDFNet-4 is freed');
-  assert.equal(fake.runtimes[0].engines[1].model, 'dpdfnet2');
-  assert.ok(fake.runtimes[0].engines[1].hops > 0);
+  await run(filters, 2);
+  await run(filters, 2, 'dpdfnet2');
+  await run(filters, 2);
+  assert.deepEqual(fake.fetched, ['dpdfnet2', 'dpdfnet4']);
+  assert.deepEqual(fake.runtimes[0].engines.map((engine) => [engine.model, engine.freed]), [['dpdfnet2', false], ['dpdfnet4', false]]);
 });
 
 test('a fresh instance after an error builds only the model that was asked for', async () => {
@@ -170,4 +169,24 @@ test('a model load that arrives during a window does not delay it or get thrown 
   await loading;
   await run(filters, 1, 'dpdfnet2');
   assert.deepEqual(fake.fetched, ['dpdfnet4', 'dpdfnet2']);
+});
+
+test('windows in the first 10 s of a run use DPDFNet-2 so playback resumes sooner', () => {
+  const policy = createModelPolicy({ workers: 3 });
+  assert.deepEqual([0, 4, 9.9, 10, 13].map((runSeconds) => policy.modelFor({ runSeconds })), [
+    'dpdfnet2',
+    'dpdfnet2',
+    'dpdfnet2',
+    'dpdfnet4',
+    'dpdfnet4',
+  ]);
+});
+
+test('falling behind during playback moves every window to DPDFNet-2 for good, once', () => {
+  const changes = [];
+  const policy = createModelPolicy({ workers: 3, onModelChange: (change) => changes.push(change) });
+  policy.fallBack('behind');
+  policy.fallBack('behind');
+  assert.equal(policy.modelFor({ runSeconds: 30 }), 'dpdfnet2');
+  assert.deepEqual(changes, [{ model: 'dpdfnet2', reason: 'behind' }]);
 });

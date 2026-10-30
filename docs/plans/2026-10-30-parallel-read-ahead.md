@@ -43,6 +43,13 @@ separator frame
 - A model being preloaded is not freed by a window of the other model.
 - The frame terminates its Workers if starting one fails.
 
+## Quick start and fallback (1.0.3)
+
+On the A56, 3 Workers kept DPDFNet-4, but one window under contention ran at about 0.9 of real time, so holds after a start or seek did not shrink.
+
+- **Quick start:** windows that start in the first 10 s of a processed run use DPDFNet-2. Later windows use the chosen model, DPDFNet-4 by default. Each filter Worker keeps both models built, so switching costs nothing.
+- **Fallback on real holds:** the engine reports `behind` once per stream when the playhead comes within 0.5 s of the filtered end, at least 20 s into a run, while YouTube has decoded audio at least 1 s further. The coordinator then moves every window to DPDFNet-2 for good.
+
 ## Out of scope
 
 - SharedArrayBuffer threads in wasm, which need cross-origin isolation.

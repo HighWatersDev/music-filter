@@ -755,3 +755,63 @@ test('windows still queued when their engine is reset never reach the separator'
   await nextTurn();
   assert.equal(calls.length, 1);
 });
+
+test('each window is told how far into its processed run it starts', async () => {
+  const runSeconds = [];
+  const separate = (left, right, rate, options) => {
+    runSeconds.push(options.runSeconds);
+    return new Promise(() => {});
+  };
+  const { engine } = startEngine({ separate, enqueue: createTaskPool(3), config: { maxInFlight: 3, rampWindows: true } });
+  engine.pushChunk(long);
+  engine.setPlayhead(0, true);
+  await engine.ready;
+  await nextTurn();
+  assert.deepEqual(runSeconds.map((s) => Math.round(s)), [0, 1, 4]);
+});
+
+function stallingSeparator() {
+  const state = { isStalled: false };
+  const separate = (left, right) => (state.isStalled ? new Promise(() => {}) : Promise.resolve([left, right]));
+  return { state, separate };
+}
+
+const behindAt = (statuses) => statuses.filter((s) => s.stage === 'behind').map((s) => Math.round(s.seconds * 10) / 10);
+
+test('playback catching up with filtered audio deep in a run, with audio decoded ahead, reports behind once', async () => {
+  const { state, separate } = stallingSeparator();
+  const { engine, statuses } = startEngine({ separate, config: { lookaheadSeconds: 30 } });
+  engine.pushChunk(long);
+  engine.setPlayhead(0, true);
+  await settle(engine);
+  const processedEnd = engine.processed[0][1] / 48000;
+  assert.ok(processedEnd >= 29, `processed to ${processedEnd} s`);
+  state.isStalled = true;
+  engine.setPlayhead(processedEnd - 0.2, true);
+  engine.setPlayhead(processedEnd - 0.1, true);
+  assert.deepEqual(behindAt(statuses), [Math.round((processedEnd - 0.2) * 10) / 10]);
+});
+
+test('catching up shortly after a start or seek, or while paused, is not reported as behind', async () => {
+  const { state, separate } = stallingSeparator();
+  const { engine, statuses } = startEngine({ separate, config: { lookaheadSeconds: 8 } });
+  engine.pushChunk(long);
+  engine.setPlayhead(0, true);
+  await settle(engine);
+  state.isStalled = true;
+  const processedEnd = engine.processed[0][1] / 48000;
+  engine.setPlayhead(processedEnd - 0.2, true);
+  engine.setPlayhead(processedEnd - 0.2, false);
+  assert.deepEqual(behindAt(statuses), []);
+});
+
+test('catching up because YouTube has no more audio is not reported as behind', async () => {
+  const { engine, statuses } = startEngine({ config: { lookaheadSeconds: 40 } });
+  engine.pushChunk(longInit);
+  engine.pushChunk(longClustersFrom(0, 6));
+  engine.setPlayhead(0, true);
+  await settle(engine);
+  const processedEnd = engine.processed[0][1] / 48000;
+  engine.setPlayhead(processedEnd - 0.2, true);
+  assert.deepEqual(behindAt(statuses), []);
+});

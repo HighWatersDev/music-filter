@@ -22,6 +22,10 @@ export const DEFAULT_CONFIG = {
   starvedRearmSeconds: 1,
   maxInFlight: 1,
   rampWindows: false,
+  // Playback within this much of the filtered end counts as caught up. The content script holds at 0.3 s.
+  behindMarginSeconds: 0.5,
+  // Shorter runs are still ramping up after a start or seek, where catching up is expected.
+  behindMinRunSeconds: 20,
 };
 
 // An Opus packet is at most 120 ms, and the decoder discards up to 80 ms of pre-roll after a gap, so a
@@ -132,6 +136,7 @@ export class StreamEngine {
     this.ready = Promise.resolve();
     this.hasSeenAudio = false;
     this.starvedAt = null;
+    this.hasReportedBehind = false;
     this.awaitingReplay = false;
   }
 
@@ -165,7 +170,23 @@ export class StreamEngine {
     }
     this.processed = trimAfter(this.processed, this.playhead + (lookaheadSeconds + windowSeconds) * rate);
     this.drainPackets();
+    this.reportIfBehind();
     this.pump();
+  }
+
+  // Filtering could not keep up although YouTube had the audio, so the device is too slow for the model.
+  // The coordinator's fallback is permanent, so one report per stream is enough.
+  reportIfBehind() {
+    if (!this.isPlaying || this.hasReportedBehind) return;
+    const { sampleRate: rate, maxStartGapSeconds, behindMarginSeconds, behindMinRunSeconds } = this.config;
+    const gap = maxStartGapSeconds * rate;
+    const runStart = bridgedStart(this.processed, this.playhead, gap);
+    if (this.playhead - runStart < behindMinRunSeconds * rate) return;
+    const processedEnd = bridgedEnd(this.processed, runStart, gap);
+    if (processedEnd - this.playhead > behindMarginSeconds * rate) return;
+    if (this.decodedFrontier() - processedEnd < rate) return;
+    this.hasReportedBehind = true;
+    this.onStatus({ stage: 'behind', seconds: this.playhead / rate });
   }
 
   get inFlight() {
@@ -383,10 +404,12 @@ export class StreamEngine {
     const rate = this.config.sampleRate;
     let startedAt;
     this.inFlightWindows.push(window);
+    const runStart = bridgedStart(this.processedOrInFlight(), window.start, this.config.maxStartGapSeconds * rate);
+    const runSeconds = (window.start - runStart) / rate;
     this.enqueue(() => {
       if (generation !== this.generation) return null;
       startedAt = Date.now();
-      return this.separate(pcm[0], pcm[1], rate, { contextBefore });
+      return this.separate(pcm[0], pcm[1], rate, { contextBefore, runSeconds });
     })
       .then((separated) => {
         if (generation !== this.generation) return;

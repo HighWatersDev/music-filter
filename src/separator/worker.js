@@ -18,9 +18,9 @@ function connect(ports) {
   enqueueSeparation = createTaskPool(filterPool.size);
   modelPolicy = createModelPolicy({
     workers: filterPool.size,
-    onModelChange: ({ model, rtf }) => {
+    onModelChange: ({ model, rtf, reason }) => {
       filterPool.load(model);
-      post({ type: 'stream-status', streamId: stream?.id, stage: 'model', model, rtf });
+      post({ type: 'stream-status', streamId: stream?.id, stage: 'model', model, rtf, reason });
     },
   });
 }
@@ -31,9 +31,10 @@ function createWindowFilter(model, streamId) {
   if (model === 'fake') return async (left, right) => [left.map((s) => s * 0.5), right.map((s) => s * 0.5)];
   if (!VOICE_MODELS.has(model)) throw new Error(`unknown model ${model}`);
   if (!hasFiltered) post({ type: 'stream-status', streamId, stage: 'loading' });
+  filterPool.load(modelPolicy.modelFor({ runSeconds: 0 }));
   filterPool.load(modelPolicy.model);
-  return async (left, right, sampleRate, { contextBefore } = {}) => {
-    const used = modelPolicy.model;
+  return async (left, right, sampleRate, { contextBefore, runSeconds = 0 } = {}) => {
+    const used = modelPolicy.modelFor({ runSeconds });
     const result = await filterPool.run({
       model: used,
       sampleRate,
@@ -64,7 +65,10 @@ function handleStream(data) {
           const transfer = [...new Set([window.left.buffer, window.right.buffer])];
           post({ type: 'window', streamId, ...window }, transfer);
         },
-        onStatus: (status) => post({ type: 'stream-status', streamId, resetId, ...status }),
+        onStatus: (status) => {
+          if (status.stage === 'behind') modelPolicy?.fallBack('behind');
+          post({ type: 'stream-status', streamId, resetId, ...status });
+        },
         onWarning: (message) => post({ type: 'stream-status', streamId, stage: 'warning', message }),
       }),
     };
