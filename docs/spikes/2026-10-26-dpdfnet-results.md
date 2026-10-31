@@ -108,9 +108,24 @@ Parallel Workers fill the buffer faster, but a single DPDFNet-4 window under con
 - A DPDFNet-4 10 s window with 3 Workers busy runs at RTF 1.0 on the A56, right on the per-window limit. 2 of 3 BBB starts fell back to DPDFNet-2 on RTF 1.017 and 1.002.
 - The `behind` fallback never fired.
 
+## Mac Safari 27.0, 0.0.1 (2026-10-31)
+
+Unsigned Debug build from `npm run package:safari`, macOS 26.6.2, M2 Pro.
+
+| | Result |
+|---|---|
+| Codec | Opus (251) with VP9 video, on both test videos |
+| Start | Filtered about 25 s after the window opened. The content script waits for `document_idle`, which YouTube reached about 20 s in. |
+| Speed | A 10 s window in 1.6 to 3.7 s. 31 s ready after 40 s of playback. No holds. |
+| Listening | Music gone on BBB. Voice kept and music removed on a video the user picked. |
+| Player icon | Toggles on and off. Music returns when off. |
+
+- Safari listed the extension only after the app was opened again with **Allow unsigned extensions** already on.
+- Once, the video ended up at 2x speed with the filter on, and read-ahead stopped as designed. It didn't happen again with a click logger running, so the cause is unknown.
+
 ## Still open
 
-- Real iPhone: speed, and whether YouTube serves it AAC.
+- Real iPhone: speed, and whether YouTube serves it AAC. Mac Safari gets Opus.
 - Low-end Android: probably slower than real time with one Worker.
 - Read-ahead decodes Opus only. An AAC stream fails with "unsupported audio type". Seen once on the iPad simulator.
 - The worker's message lag (p95 5.4 s on the simulator) comes from filtering a whole window without yielding. Only the 5 s replay throttle stops a starved report at the end of a replay from starting another one.
