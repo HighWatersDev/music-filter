@@ -57,7 +57,7 @@ Requirements:
 
 ```bash
 npm ci
-npm run fetch:models   # DPDFNet ONNX files from Hugging Face, checked by SHA-256
+npm run fetch:models   # DPDFNet ONNX files from this repo's release, else Hugging Face, checked by SHA-256
 npm run build:dpdf     # Rust → extension/assets/dpdf_bg.wasm and vendor/dpdf/dpdf.js
 npm run build          # bundles src/ into extension/dist
 npm test

@@ -73,7 +73,7 @@ Same package and copy as Chrome. Category: Accessibility.
 **Notes to reviewer:**
 > The bundled JavaScript in dist/ is built with esbuild from src/ (npm run build). It is not minified.
 > assets/dpdf_bg.wasm is compiled from the Rust crate in native/dpdf (npm run build:dpdf). The pinned toolchain is in native/dpdf/rust-toolchain.toml, and vendor/dpdf/SOURCE records the expected sha256.
-> assets/dpdfnet4.onnx and dpdfnet2.onnx are the Apache-2.0 DPDFNet models from huggingface.co/Ceva-IP/DPDFNet at a pinned revision. scripts/fetch-models.sh downloads them and checks their sha256.
+> assets/dpdfnet4.onnx and dpdfnet2.onnx are the Apache-2.0 DPDFNet models from huggingface.co/Ceva-IP/DPDFNet at a pinned revision. scripts/fetch-models.sh downloads them, from a copy in this repo's GitHub release or else from Hugging Face, and checks their sha256.
 > To test: open any YouTube video with talking over background music. The filter is on by default. Move the pointer over the player and click the music-note button at the top left to compare with the original audio. The toolbar button has the same switch.
 
 ## Apple App Store (iPhone, iPad, Mac)

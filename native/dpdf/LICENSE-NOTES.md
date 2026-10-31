@@ -2,7 +2,7 @@
 
 ## DPDFNet models
 
-`scripts/fetch-models.sh` downloads two files from the Hugging Face repo [Ceva-IP/DPDFNet](https://huggingface.co/Ceva-IP/DPDFNet) at revision `dd6818d00f50c836fed43a6243ebe49116de5964` (last modified 2026-07-05).
+`scripts/fetch-models.sh` downloads two files from the Hugging Face repo [Ceva-IP/DPDFNet](https://huggingface.co/Ceva-IP/DPDFNet) at revision `dd6818d00f50c836fed43a6243ebe49116de5964` (last modified 2026-07-05). It tries an unchanged copy in this repo's GitHub release [`dpdfnet-dd6818d`](https://github.com/HighWatersDev/music-filter/releases/tag/dpdfnet-dd6818d) first, so builds still work if the Hugging Face repo goes away. Both sources must match the SHA-256 below.
 
 | File | Bytes | SHA-256 |
 |---|---|---|
