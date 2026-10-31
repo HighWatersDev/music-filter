@@ -123,6 +123,21 @@ Unsigned Debug build from `npm run package:safari`, macOS 26.6.2, M2 Pro.
 - Safari listed the extension only after the app was opened again with **Allow unsigned extensions** already on.
 - Once, the video ended up at 2x speed with the filter on, and read-ahead stopped as designed. It didn't happen again with a click logger running, so the cause is unknown.
 
+## Option for later: DPDFNet-8 at 48 kHz
+
+The 16 kHz models cut everything above 8 kHz, so voices sound a little dull. Ceva also ships `onnx/dpdfnet8_48khz_hr.onnx` (14.9 MB, same repo and license), which keeps the full range. From the 2026-10-26 listening round (`listening/metrics-v2.json`, M2 Pro):
+
+| | DPDFNet-4 16 kHz (shipped) | DPDFNet-8 48 kHz |
+|---|---|---|
+| Speech dropouts per min, music at equal level / 6 dB louder | 16 / 48 | 17 / 38 |
+| Music removed, full range, music 6 dB louder | 41 dB | 46 dB |
+| Browser speed, share of real time on one thread | 0.21 | 0.58 |
+
+- Read-ahead on desktop Safari could use it with little work, since parallel Workers absorb the cost.
+- Live mode runs the model on the audio thread. About 5.8 ms per 10 ms hop is too tight for slower laptops, so it needs a speed check or a move off the audio thread.
+- Phones can't run it in real time.
+- Before deciding, listen on a clip with continuous music under speech. The `yt` clip in that round has music only before the speech starts, so it can't show the difference.
+
 ## Still open
 
 - Real iPhone: speed, and whether YouTube serves it AAC. Mac Safari gets Opus.
@@ -132,4 +147,3 @@ Unsigned Debug build from `npm run package:safari`, macOS 26.6.2, M2 Pro.
 - The panel names no model in read-ahead until a drop to DPDFNet-2.
 - A pointless replay fires when a video ends.
 - Sung vocals still come through. That needs v1.1 work (fine-tune, or a speech-vs-singing gate).
-- Store packaging: icons, listing, privacy text.
