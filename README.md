@@ -14,7 +14,7 @@ A browser extension that removes background music from YouTube videos while they
 
 Chrome on phones does not support extensions.
 
-![Music Filter on a YouTube video in Chrome](docs/store/screenshots/chrome-1-filtering.png)
+![Music Filter removes background music and keeps the voices](docs/store/screenshots/chrome-1-overview.png)
 
 ## Installing
 
@@ -74,7 +74,7 @@ Load `extension/` as an unpacked extension for development. `npm run package` bu
 | `native/dpdf/` | Rust crate that runs DPDFNet with tract, built to WebAssembly |
 | `test/` | Unit tests (`node --test`) and browser tests in `test/e2e/` |
 | `tools/listen/` | Offline listening checks on audio files |
-| `tools/store/` | Store screenshot capture |
+| `tools/store/` | Renders the store banner and promo tile from `design/` |
 | `tools/tiger-bench/` | Benchmark of the DBS-TIGER model in the browser, see `docs/spikes/` |
 | `docs/` | Design notes, test results and store listing copy. [Index](docs/README.md). |
 

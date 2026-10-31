@@ -3,7 +3,6 @@ extension/dist/
 extension/assets/
 test-page/sample.mp4
 .DS_Store
-tools/listen/node_modules/
 listening/
 build/
 test-page/fixtures/

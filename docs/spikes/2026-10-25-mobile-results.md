@@ -25,7 +25,6 @@ Build: `scripts/build-firefox.sh` copies `extension/` to `build/firefox` and add
 
 - The MAIN-world chunk tap installed on the first page load. No timing miss seen in one run.
 - MV3 host permission was granted at install for the temporary add-on. A store install would show the permission prompt.
-- Screenshot: `2026-10-25-android-firefox-diagnose.png`.
 
 ## iPhone Safari details
 
@@ -43,8 +42,6 @@ Build: `scripts/build-safari.sh` wraps `extension/` with `safari-web-extension-c
 | Can we copy YouTube's audio chunks? | **Yes.** A MAIN-world script wrapping `ManagedSourceBuffer.prototype.appendBuffer` captured `audio/webm; codecs="opus"`, 361 chunks, 837 KB. |
 | Can we decode them? | **Yes.** `decodeAudioData` on the chunks in order gave 50.0 s of stereo 48 kHz audio, peak 0.75. WebCodecs `AudioDecoder` also reports Opus as supported. |
 | Other capabilities | AudioWorklet, WebGPU and WASM SIMD are available. Not cross-origin isolated, so WASM runs single-threaded. |
-
-Screenshots: `2026-10-25-iphone-silence.png` (element tap silent) and `2026-10-25-iphone-diagnose.png` (chunk copy and decode working).
 
 ## What it means
 

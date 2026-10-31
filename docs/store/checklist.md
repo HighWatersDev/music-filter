@@ -16,10 +16,10 @@ Commit before `npm run package`. The Firefox source zip is cut from HEAD.
 
 | Store | Account | Upload | Listing |
 |---|---|---|---|
-| Chrome Web Store | Developer account, one-time $5 fee, 2-step verification on the Google account | `music-filter-chromium-<version>.zip` | Copy and answers in `listing.md`. Screenshot `chrome-1-filtering.png`, promo tile `promo-440x280.png`. |
+| Chrome Web Store | Developer account, one-time $5 fee, 2-step verification on the Google account | `music-filter-chromium-<version>.zip` | Copy and answers in `listing.md`. Screenshot `chrome-1-overview.png`, promo tile `promo-440x280.png`. |
 | Edge Add-ons | Partner Center account, free | Same zip | Same copy |
 | Firefox Add-ons | addons.mozilla.org account, free | `music-filter-firefox-<version>.zip` plus `music-filter-source-<version>.zip` as the source | Same copy, reviewer notes in `listing.md` |
-| Apple App Store | Apple Developer Program, $99 a year | Archive in Xcode and upload, see below | App Store Connect record, copy in `listing.md`, screenshots `iphone-*`, `ipad-*` |
+| Apple App Store | Apple Developer Program, $99 a year | Archive in Xcode and upload, see below | App Store Connect record, copy in `listing.md`, iPhone and iPad screenshots (not made yet) |
 
 ## Apple steps
 
@@ -37,14 +37,14 @@ Commit before `npm run package`. The Firefox source zip is cut from HEAD.
 
 ## Known product gap before the Safari release
 
-Read-ahead decodes Opus only. When YouTube serves AAC (`mp4a.40.2`), the panel shows "Can't filter this video: unsupported audio type" and the video stays muted. The iPhone simulator always got Opus. The iPad simulator got AAC once while its video codecs were restricted. Whether real iPhones and iPads get AAC is unknown. Desktop live mode is not affected because it filters the element's output whatever the codec.
+Read-ahead decodes Opus only. When YouTube serves AAC (`mp4a.40.2`), the extension shows "Can't filter this video: unsupported audio type" and the video stays muted. The iPhone simulator always got Opus. The iPad simulator got AAC once while its video codecs were restricted. Whether real iPhones and iPads get AAC is unknown. Desktop live mode is not affected because it filters the element's output whatever the codec.
 
-## Screenshots to retake
+## Apple screenshots
 
-`iphone-*.png` and `ipad-*.png` still show the old floating card from before 0.0.1. Retake them in the simulator before the Apple submission.
+None exist yet. Apple needs iPhone 6.9" and iPad 13" screenshots, plus Mac ones (at least 1280×800) for the Mac app. Make them before the Apple submission.
 
 ## Review risks
 
-- **YouTube content in screenshots.** All screenshots use Big Buck Bunny (CC BY 3.0) with recommendations hidden. YouTube's own interface still shows.
+- **YouTube content in screenshots.** The Chrome and Edge screenshot is a designed banner (`design/store-banner.html`) with no YouTube interface or video. Apple screenshots should follow the same rule.
 - **Apple guideline 4.2 (minimum functionality).** The app is a container for a Safari extension, which Apple accepts when the extension does real work. Review notes explain how to test it.
 - **Apple guideline 5.2.2 (third-party content).** The extension changes how YouTube audio plays. Ad blockers and YouTube enhancers on the store do the same. If App Review objects, reply that the extension only changes playback on the user's device and never downloads or redistributes content.

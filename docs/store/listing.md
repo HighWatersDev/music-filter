@@ -51,7 +51,7 @@ Links used everywhere:
 | Remote code | No. All code and the model ship in the package. |
 | Data usage | Collects none of the listed data types. Certify all three disclosures. |
 | Privacy policy URL | See links above |
-| Screenshots | `docs/store/screenshots/chrome-*.png`, 1280×800 |
+| Screenshots | `docs/store/screenshots/chrome-1-overview.png`, 1280×800 |
 | Small promo tile | `docs/store/screenshots/promo-440x280.png` |
 
 ## Edge Add-ons
@@ -68,7 +68,7 @@ Same package and copy as Chrome. Category: Accessibility.
 | Data collection | None (declared in the manifest) |
 | License | Apache License 2.0 |
 | Source code | Upload `build/store/music-filter-source-<version>.zip`. Build steps are in README.md. |
-| Screenshots | `docs/store/screenshots/chrome-*.png` work here too |
+| Screenshots | `chrome-1-overview.png` works here too |
 
 **Notes to reviewer:**
 > The bundled JavaScript in dist/ is built with esbuild from src/ (npm run build). It is not minified.
@@ -92,7 +92,7 @@ Same package and copy as Chrome. Category: Accessibility.
 | Support URL | Issues link above |
 | Privacy policy URL | See links above |
 | Copyright | 2026 Rinat Kirimov |
-| Screenshots | iPhone 6.9": `docs/store/screenshots/iphone-*.png`. iPad 13": `ipad-*.png`. Mac: not made yet (see checklist.md). |
+| Screenshots | iPhone 6.9", iPad 13" and Mac. Not made yet (see checklist.md). |
 
 **Promotional text** (170 chars):
 > Watch YouTube without the background music. Music Filter keeps the voices and removes the soundtrack, right in Safari, on your device.

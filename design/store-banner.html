@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Music Filter store banner</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    width: 1280px;
+    height: 800px;
+    overflow: hidden;
+    display: grid;
+    grid-template-columns: 500px 1fr;
+    gap: 56px;
+    align-items: center;
+    padding: 0 72px;
+    background: radial-gradient(circle at 85% 15%, #2a6fd6 0%, transparent 45%), linear-gradient(135deg, #1d5fbf, #0b2350);
+    color: #fff;
+    font-family: -apple-system, 'SF Pro Text', 'Helvetica Neue', Arial, sans-serif;
+  }
+  .brand { display: flex; align-items: center; gap: 22px; }
+  .brand img { width: 96px; height: 96px; filter: drop-shadow(0 8px 24px rgba(0, 0, 0, 0.35)); }
+  h1 { margin: 0; font-size: 54px; font-weight: 700; letter-spacing: -0.5px; }
+  .lead { margin: 28px 0 36px; font-size: 27px; line-height: 1.35; color: rgba(255, 255, 255, 0.92); }
+  ul { margin: 0; padding: 0; list-style: none; display: grid; gap: 18px; }
+  li { display: flex; align-items: center; gap: 14px; font-size: 20px; color: rgba(255, 255, 255, 0.88); }
+  li .dot { width: 10px; height: 10px; flex: none; border-radius: 50%; background: #ff6b5a; margin: 0 13px; }
+  .player-button {
+    display: grid; place-items: center; flex: none;
+    width: 36px; height: 36px; border-radius: 50%;
+    background: #2f6fed; color: #fff;
+    box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.25);
+  }
+
+  .stage { display: grid; gap: 28px; }
+  .waves {
+    padding: 28px 32px 32px;
+    border-radius: 20px;
+    background: rgba(5, 16, 40, 0.55);
+    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.35);
+  }
+  .row + .row { margin-top: 26px; }
+  .row-label { display: flex; justify-content: space-between; align-items: baseline; font-size: 16px; font-weight: 600; letter-spacing: 0.3px; color: rgba(255, 255, 255, 0.75); }
+  .legend { display: flex; gap: 18px; font-weight: 400; }
+  .legend span::before { content: ''; display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; background: currentColor; }
+  .voice { color: #ffffff; }
+  .music { color: #ff6b5a; }
+  svg.wave { display: block; width: 100%; height: 120px; margin-top: 10px; }
+
+  .controls { display: flex; align-items: center; justify-content: space-between; gap: 24px; }
+  .popup {
+    width: 300px; flex: none;
+    padding: 16px;
+    border-radius: 12px;
+    background: #fff; color: #1d1d1f;
+    font: 14px/1.4 -apple-system, 'Helvetica Neue', Arial, sans-serif;
+    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.45);
+  }
+  .popup header { display: flex; align-items: center; gap: 10px; }
+  .popup header img { width: 28px; height: 28px; }
+  .popup h2 { flex: 1; margin: 0; font-size: 16px; font-weight: 600; }
+  .switch { position: relative; width: 44px; height: 26px; border-radius: 13px; background: #2f6fed; }
+  .switch::after { content: ''; position: absolute; top: 3px; left: 21px; width: 20px; height: 20px; border-radius: 50%; background: #fff; }
+  .popup p { margin: 12px 0 0; color: #5f6368; }
+  .caption { display: flex; align-items: center; gap: 14px; font-size: 18px; line-height: 1.35; color: rgba(255, 255, 255, 0.85); }
+</style>
+</head>
+<body>
+<section>
+  <div class="brand">
+    <img src="icon.svg" alt="">
+    <h1>Music Filter</h1>
+  </div>
+  <p class="lead">Removes background music from YouTube videos and keeps the voices.</p>
+  <ul>
+    <li><span class="dot"></span>Runs on your device. Nothing is uploaded.</li>
+    <li><span class="dot"></span>On by default, no account needed.</li>
+    <li><span class="dot"></span>Chrome, Edge and Firefox</li>
+  </ul>
+</section>
+
+<section class="stage">
+  <div class="waves">
+    <div class="row">
+      <div class="row-label">ORIGINAL <span class="legend"><span class="voice">Voice</span><span class="music">Music</span></span></div>
+      <svg class="wave" id="before" viewBox="0 0 640 120" preserveAspectRatio="none"></svg>
+    </div>
+    <div class="row">
+      <div class="row-label">WITH MUSIC FILTER</div>
+      <svg class="wave" id="after" viewBox="0 0 640 120" preserveAspectRatio="none"></svg>
+    </div>
+  </div>
+
+  <div class="controls">
+  <div class="caption">
+    <span class="player-button">
+      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M9 17V6l10-2v11"/><circle cx="6.5" cy="17" r="2.5" fill="currentColor"/><circle cx="16.5" cy="15" r="2.5" fill="currentColor"/><line x1="3" y1="3" x2="21" y2="21"/>
+      </svg>
+    </span>
+    <span>Switch it off with the button on the player or in the toolbar.</span>
+  </div>
+
+  <div class="popup">
+    <header>
+      <img src="icon.svg" alt="">
+      <h2>Music Filter</h2>
+      <span class="switch"></span>
+    </header>
+    <p>Filtered · 28 s ready</p>
+  </div>
+  </div>
+</section>
+
+<script>
+  const BARS = 128;
+  const WIDTH = 640;
+  const MID = 60;
+  let seed = 7;
+  const random = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+
+  const syllables = [];
+  for (let x = 4; x < BARS; ) {
+    const length = 3 + Math.floor(random() * 5);
+    syllables.push({ start: x, length, peak: 0.45 + random() * 0.5 });
+    x += length + (random() < 0.3 ? 6 + Math.floor(random() * 6) : 1);
+  }
+  const voice = Array.from({ length: BARS }, (_, i) => {
+    const s = syllables.find(({ start, length }) => i >= start && i < start + length);
+    if (!s) return 0.02;
+    return s.peak * Math.sin((Math.PI * (i - s.start + 0.5)) / s.length) * (0.75 + random() * 0.25);
+  });
+  const music = Array.from({ length: BARS }, (_, i) => 0.32 + 0.12 * Math.sin(i / 3) + (i % 8 === 0 ? 0.22 : 0) + random() * 0.08);
+
+  function bars(svg, values, color) {
+    const step = WIDTH / BARS;
+    for (const [i, value] of values.entries()) {
+      const height = Math.max(2, value * MID * 1.9);
+      const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+      rect.setAttribute('x', (i * step + step * 0.2).toFixed(2));
+      rect.setAttribute('y', (MID - height / 2).toFixed(2));
+      rect.setAttribute('width', (step * 0.6).toFixed(2));
+      rect.setAttribute('height', height.toFixed(2));
+      rect.setAttribute('rx', '1.5');
+      rect.setAttribute('fill', color);
+      svg.append(rect);
+    }
+  }
+  bars(document.getElementById('before'), music, '#ff6b5a');
+  bars(document.getElementById('before'), voice, '#ffffff');
+  bars(document.getElementById('after'), voice, '#ffffff');
+</script>
+</body>
+</html>
