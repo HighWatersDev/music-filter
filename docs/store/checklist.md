@@ -21,6 +21,44 @@ Commit before `npm run package`. The Firefox source zip is cut from HEAD.
 | Firefox Add-ons | addons.mozilla.org account, free | `music-filter-firefox-<version>.zip` plus `music-filter-source-<version>.zip` as the source | Same copy, reviewer notes in `listing.md` |
 | Apple App Store | Apple Developer Program, $99 a year | Archive in Xcode and upload, see below | App Store Connect record, copy in `listing.md`, iPhone and iPad screenshots (not made yet) |
 
+## Firefox steps
+
+First submitted 2026-11-01 (0.0.1).
+
+1. Sign in at https://addons.mozilla.org/developers/ and click **Submit a New Add-on**.
+2. Where to host: **On this site**.
+3. Upload `music-filter-firefox-<version>.zip`. Tick Firefox and Firefox for Android.
+4. Do you need to submit source code: **Yes**, upload `music-filter-source-<version>.zip`.
+5. Describe Add-on, from `listing.md`:
+   - Name, summary and description from the shared copy. Leave experimental and payment unticked.
+   - Category: Photos, Music & Videos.
+   - Support email: empty, so no address is public. Support website: the issues link.
+   - License: Apache License 2.0. Privacy policy: unticked, since nothing is collected.
+   - Notes to reviewer from the Firefox section, including the build steps.
+6. **Submit Version**. Status becomes Awaiting Review.
+7. The listing shows a puzzle piece until you add an icon. Edit Product Page › Images: upload `extension/icons/icon-128.png` and the screenshot `chrome-1-overview.png`.
+
+For a new version: My Add-ons › Music Filter › New Version, then steps 3, 4 and 6.
+
+## Chrome steps
+
+First submitted 2026-11-01 (0.0.1).
+
+1. Sign in at https://chrome.google.com/webstore/devconsole. First visit: accept the agreement, pay $5, turn on 2-Step Verification.
+2. Trader declaration: non-trader, since the extension is free and not run as a business. It can be changed later in Settings.
+3. Settings: publisher display name `HighWatersDev`, then a contact email, verified through the link Google sends.
+4. Items › New item › upload `music-filter-chromium-<version>.zip`. Title and summary come from the manifest.
+5. Store listing, from `listing.md`:
+   - Description from the shared copy. Category: Accessibility. Language: English.
+   - Store icon `extension/icons/icon-128.png`, screenshot `chrome-1-overview.png`, small promo tile `promo-440x280.png`.
+   - Official URL: None. Homepage: the repo. Support: the issues link. Mature content: off.
+6. Privacy: single purpose and the two permission justifications from `listing.md`. Remote code: No. No data types ticked, all three statements ticked. Privacy policy URL.
+7. Distribution: free, Public, all regions.
+8. Test instructions: no login, plus the test steps from the Firefox reviewer notes and the repo link.
+9. Submit for review. "Publish automatically after it has passed review" is ticked by default. Untick it to publish by hand within 30 days of approval.
+
+For a new version: the item's Package tab › Upload new package, then Submit for review.
+
 ## Apple steps
 
 1. Join the Apple Developer Program.

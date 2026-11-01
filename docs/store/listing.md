@@ -21,7 +21,6 @@ Links used everywhere:
 > Use it to follow a talk, lecture, podcast or vlog without the soundtrack. It helps with focus, sensory sensitivity, or a personal preference to avoid music.
 >
 > How to use it
-> • Open a YouTube video.
 > • It's on as soon as you install it. Open a YouTube video and the music is removed.
 > • To hear the original audio, tap the music-note button in the top-left corner of the player. It shows with YouTube's own controls.
 > • The Music Filter button in the browser toolbar has the same switch and shows the status.
@@ -71,6 +70,15 @@ Same package and copy as Chrome. Category: Accessibility.
 | Screenshots | `chrome-1-overview.png` works here too |
 
 **Notes to reviewer:**
+> Build steps, from the unzipped source folder, on macOS or Linux:
+> 1. Install Node 24, rustup and wasm-pack 0.15.0. rustup picks up Rust 1.99.1 and the wasm32-unknown-unknown target from native/dpdf/rust-toolchain.toml.
+> 2. npm ci
+> 3. npm run fetch:models
+> 4. npm run build:dpdf
+> 5. npm run build
+> 6. npm run package
+> The add-on is then at build/store/music-filter-firefox-0.0.1.zip.
+>
 > The bundled JavaScript in dist/ is built with esbuild from src/ (npm run build). It is not minified.
 > assets/dpdf_bg.wasm is compiled from the Rust crate in native/dpdf (npm run build:dpdf). The pinned toolchain is in native/dpdf/rust-toolchain.toml, and vendor/dpdf/SOURCE records the expected sha256.
 > assets/dpdfnet4.onnx and dpdfnet2.onnx are the Apache-2.0 DPDFNet models from huggingface.co/Ceva-IP/DPDFNet at a pinned revision. scripts/fetch-models.sh downloads them, from a copy in this repo's GitHub release or else from Hugging Face, and checks their sha256.
