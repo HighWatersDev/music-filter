@@ -21,6 +21,7 @@ The current state is in the README, `plans/2026-10-30-parallel-read-ahead.md` an
 | [2026-10-26-live-desktop-and-safari-fixes.md](plans/2026-10-26-live-desktop-and-safari-fixes.md) | Live mode on desktop, Safari read-ahead fixes | Historical, superseded by the DPDFNet swap |
 | [2026-10-26-dpdfnet-swap.md](plans/2026-10-26-dpdfnet-swap.md) | Replace DeepFilterNet3 with DPDFNet in both modes | Current |
 | [2026-10-30-parallel-read-ahead.md](plans/2026-10-30-parallel-read-ahead.md) | Read-ahead across 2 or 3 Workers, quick start, model fallback | Current |
+| [2026-11-02-music-gated-passthrough-design.md](plans/2026-11-02-music-gated-passthrough-design.md) | Play the original audio where a detector hears no music, so effects survive | Design, not built |
 
 ## Spikes and results
 
