@@ -10,6 +10,8 @@ use tract_onnx::tract_core::ops::scan::OptScan;
 use tract_onnx::tract_core::plan::SimplePlan;
 use wasm_bindgen::prelude::*;
 
+mod music_detector;
+
 struct ModelInfo {
     n: usize,
     hop: usize,
