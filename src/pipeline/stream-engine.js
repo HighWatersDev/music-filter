@@ -19,6 +19,7 @@ export const DEFAULT_CONFIG = {
   // stayed at -21.6 dB or better with 1 s (-22.1 dB with 2 s, -19.0 dB with 0.25 s), and the compute RTF
   // fell from 0.268 to 0.252. The join at 19 s sits near -17 dB whatever the context length.
   warmUpBeforeSeconds: 1,
+  contextAfterSeconds: 0,
   starvedRearmSeconds: 1,
   maxInFlight: 1,
   rampWindows: false,
@@ -369,6 +370,14 @@ export class StreamEngine {
     return this.readWindow({ start: from, end: start });
   }
 
+  readContextAfter({ end }) {
+    const { sampleRate: rate, contextAfterSeconds, maxStartGapSeconds } = this.config;
+    const latest = end + Math.round(contextAfterSeconds * rate);
+    const to = Math.min(latest, bridgedEnd(this.timeline.ranges, end, maxStartGapSeconds * rate));
+    if (to <= end) return [new Float32Array(0), new Float32Array(0)];
+    return this.readWindow({ start: end, end: to });
+  }
+
   reportIfStarved() {
     if (this.awaitingReplay || !this.hasSeenAudio || this.hasPendingDecode()) return;
     const { sampleRate: rate, starvedRearmSeconds } = this.config;
@@ -400,6 +409,7 @@ export class StreamEngine {
   dispatch(window) {
     const pcm = this.readWindow(window);
     const contextBefore = this.readContextBefore(window);
+    const contextAfter = this.readContextAfter(window);
     const { generation } = this;
     const rate = this.config.sampleRate;
     let startedAt;
@@ -409,13 +419,20 @@ export class StreamEngine {
     this.enqueue(() => {
       if (generation !== this.generation) return null;
       startedAt = Date.now();
-      return this.separate(pcm[0], pcm[1], rate, { contextBefore, runSeconds });
+      return this.separate(pcm[0], pcm[1], rate, { contextBefore, contextAfter, runSeconds });
     })
       .then((separated) => {
         if (generation !== this.generation) return;
-        const [left, right] = separated;
+        const [left, right, passthrough = []] = separated;
         this.processed = addRange(this.processed, window.start, window.end);
-        this.onWindow({ startSeconds: window.start / rate, sampleRate: rate, left, right });
+        const startSeconds = window.start / rate;
+        this.onWindow({
+          startSeconds,
+          sampleRate: rate,
+          left,
+          right,
+          passthrough: passthrough.map(([from, to]) => [startSeconds + from, startSeconds + to]),
+        });
         this.onStatus({
           stage: 'window',
           startSeconds: window.start / rate,
