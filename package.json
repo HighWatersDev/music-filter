@@ -16,7 +16,8 @@
     "test:e2e": "npm run build && node test/e2e/live.e2e.mjs && node test/e2e/read-ahead.e2e.mjs",
     "package": "node scripts/package.mjs",
     "package:safari": "bash scripts/package-safari.sh",
-    "render:icons": "node scripts/render-icons.mjs"
+    "render:icons": "node scripts/render-icons.mjs",
+    "test:e2e:keep": "npm run build && node test/e2e/keep-other-sounds.e2e.mjs"
   },
   "devDependencies": {
     "esbuild": "0.25.0",

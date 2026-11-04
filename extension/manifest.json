@@ -54,6 +54,7 @@
         "assets/dpdf_bg.wasm",
         "assets/dpdfnet4.onnx",
         "assets/dpdfnet2.onnx",
+        "assets/music-detector-mn05.onnx",
         "separator.html",
         "dist/separator-frame.js",
         "dist/separator-worker.js",
