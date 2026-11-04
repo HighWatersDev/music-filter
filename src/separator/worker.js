@@ -7,6 +7,8 @@ const post = (message, transfer = []) => self.postMessage(message, transfer);
 const STREAM_MESSAGES = new Set(['stream-reset', 'stream-chunk', 'stream-replay-end', 'stream-abort', 'playhead']);
 // 'dfn3' is what the read-ahead content script sent before the DPDFNet swap. It now gets DPDFNet-4 too.
 const VOICE_MODELS = new Set(['dpdfnet4', 'dfn3']);
+// The gate needs 2.5 s of audio on each side of a window. See music-gate.js.
+const GATE_CONTEXT = { warmUpBeforeSeconds: 2.5, contextAfterSeconds: 2.5 };
 let stream = null;
 let filterPool;
 let modelPolicy;
@@ -27,13 +29,13 @@ function connect(ports) {
 
 const copyOf = (samples) => samples.slice();
 
-function createWindowFilter(model, streamId) {
+function createWindowFilter(model, streamId, { keepOtherSounds = false } = {}) {
   if (model === 'fake') return async (left, right) => [left.map((s) => s * 0.5), right.map((s) => s * 0.5)];
   if (!VOICE_MODELS.has(model)) throw new Error(`unknown model ${model}`);
   if (!hasFiltered) post({ type: 'stream-status', streamId, stage: 'loading' });
   filterPool.load(modelPolicy.modelFor({ runSeconds: 0 }));
   filterPool.load(modelPolicy.model);
-  return async (left, right, sampleRate, { contextBefore, runSeconds = 0 } = {}) => {
+  return async (left, right, sampleRate, { contextBefore, contextAfter, runSeconds = 0 } = {}) => {
     const used = modelPolicy.modelFor({ runSeconds });
     const result = await filterPool.run({
       model: used,
@@ -41,24 +43,26 @@ function createWindowFilter(model, streamId) {
       left: copyOf(left),
       right: copyOf(right),
       contextBefore: contextBefore?.map(copyOf),
+      contextAfter: contextAfter?.map(copyOf),
+      keepOtherSounds,
     });
     hasFiltered = true;
     const samples = left.length + (contextBefore?.[0]?.length ?? 0);
     modelPolicy.observe({ model: used, isWarm: result.isWarm, computeMs: result.computeMs, samples, sampleRate });
-    return [result.left, result.right];
+    return [result.left, result.right, result.passthrough ?? []];
   };
 }
 
 function handleStream(data) {
   if (data.type === 'stream-reset') {
-    const { streamId, resetId, model, playheadSeconds = 0 } = data;
+    const { streamId, resetId, model, playheadSeconds = 0, keepOtherSounds = false } = data;
     stream?.engine.reset();
     stream = {
       id: streamId,
       engine: new StreamEngine({
-        separate: createWindowFilter(model, streamId),
+        separate: createWindowFilter(model, streamId, { keepOtherSounds }),
         enqueue: enqueueSeparation,
-        config: { maxInFlight: filterPool.size, rampWindows: true },
+        config: { maxInFlight: filterPool.size, rampWindows: true, ...(keepOtherSounds ? GATE_CONTEXT : {}) },
         playheadSeconds,
         awaitingReplay: true,
         onWindow: (window) => {

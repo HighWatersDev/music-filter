@@ -1,5 +1,6 @@
 import { createDpdfFilter } from '../pipeline/dpdf-filter.js';
 import { createVoiceFilter } from '../pipeline/voice-filter.js';
+import { GATE, gateCurve, mixGate, openFrames, passthroughRanges } from '../pipeline/music-gate.js';
 
 const FIRST_MODEL = 'dpdfnet4';
 const QUICK_MODEL = 'dpdfnet2';
@@ -10,6 +11,18 @@ const QUICK_START_SECONDS = 10;
 export const READ_AHEAD_MAX_RTF = 0.6;
 // Above this one window takes longer than the audio it covers, which lengthens every hold after a seek.
 export const READ_AHEAD_MAX_WINDOW_RTF = 1;
+
+const EMPTY = new Float32Array(0);
+
+function join(parts) {
+  const out = new Float32Array(parts.reduce((length, part) => length + part.length, 0));
+  let at = 0;
+  for (const part of parts) {
+    out.set(part, at);
+    at += part.length;
+  }
+  return out;
+}
 
 export const windowRtf = ({ computeMs, samples, sampleRate }) => computeMs / 1000 / (samples / sampleRate);
 
@@ -57,12 +70,14 @@ export function createModelPolicy({
 // A wasm trap leaves the instance unusable: wasm-bindgen's borrow flag on the engine stays set, so every
 // later call fails with "recursive use of an object". Any error therefore drops the whole instance, and
 // the next window instantiates the module again.
-export function createReadAheadFilters({ instantiate, fetchModel }) {
+export function createReadAheadFilters({ instantiate, fetchModel, fetchDetector }) {
   let runtime = null;
+  let detector = null;
   const filters = new Map();
 
   function discardRuntime() {
     runtime = null;
+    detector = null;
     filters.clear();
   }
 
@@ -81,11 +96,57 @@ export function createReadAheadFilters({ instantiate, fetchModel }) {
     return filters.get(name);
   }
 
+  // A detector that fails to load leaves the window filtered, and the next window tries again.
+  function detectorFor() {
+    if (!detector) {
+      runtime ??= instantiate();
+      const pending = Promise.all([runtime, fetchDetector()]).then(([{ createDetector }, bytes]) => createDetector(bytes));
+      pending.catch(() => {
+        if (detector === pending) detector = null;
+      });
+      detector = pending;
+    }
+    return detector;
+  }
+
+  // The window is filtered together with the audio around it, because the gate needs 1.5 s of scores
+  // on each side and each score needs 1 s of audio on each side.
+  async function gatedFilter(voiceFilter, left, right, sampleRate, { contextBefore, contextAfter }) {
+    const [beforeLeft = EMPTY, beforeRight = EMPTY] = contextBefore ?? [];
+    const [afterLeft = EMPTY, afterRight = EMPTY] = contextAfter ?? [];
+    const spanLeft = join([beforeLeft, left, afterLeft]);
+    const spanRight = join([beforeRight, right, afterRight]);
+    const [voice] = voiceFilter(spanLeft, spanRight);
+    const start = beforeLeft.length;
+    const windowVoice = voice.subarray(start, start + left.length);
+    const filtered = () => [windowVoice.slice(), windowVoice.slice(), []];
+
+    const loaded = await detectorFor().catch(() => null);
+    if (!loaded) return filtered();
+    const residual = new Float32Array(voice.length);
+    for (let i = 0; i < voice.length; i++) residual[i] = 0.5 * (spanLeft[i] + spanRight[i]) - voice[i];
+    let probabilities;
+    try {
+      probabilities = loaded.frameProbabilities(residual);
+    } catch {
+      discardRuntime();
+      return filtered();
+    }
+    const curve = gateCurve(openFrames(probabilities), {
+      frameSamples: GATE.frameSeconds * sampleRate,
+      length: voice.length,
+      fadeSamples: GATE.fadeSeconds * sampleRate,
+    }).subarray(start, start + left.length);
+    const [outLeft, outRight] = mixGate([left, right], [windowVoice, windowVoice], curve);
+    return [outLeft, outRight, passthroughRanges(curve, sampleRate)];
+  }
+
   return {
     load: (name) => filterFor(name),
-    async filter(left, right, sampleRate, { contextBefore, model = FIRST_MODEL } = {}) {
+    async filter(left, right, sampleRate, { contextBefore, contextAfter, model = FIRST_MODEL, keepOtherSounds = false } = {}) {
       const { voiceFilter } = await filterFor(model);
       try {
+        if (keepOtherSounds) return await gatedFilter(voiceFilter, left, right, sampleRate, { contextBefore, contextAfter });
         return voiceFilter(left, right, { contextBefore });
       } catch (error) {
         discardRuntime();

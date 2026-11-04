@@ -190,3 +190,73 @@ test('falling behind during playback moves every window to DPDFNet-2 for good, o
   assert.equal(policy.modelFor({ runSeconds: 30 }), 'dpdfnet2');
   assert.deepEqual(changes, [{ model: 'dpdfnet2', reason: 'behind' }]);
 });
+
+const stereo = (seconds) => [
+  Float32Array.from({ length: seconds * RATE }, (_, i) => 0.1 * Math.sin(i / 10)),
+  Float32Array.from({ length: seconds * RATE }, (_, i) => 0.1 * Math.cos(i / 7)),
+];
+
+function gated({ probability = 0, detectorFails = false, detectorThrows = false } = {}) {
+  const runtimes = fakeRuntimes();
+  const seen = [];
+  const instantiate = async () => ({
+    ...(await runtimes.instantiate()),
+    createDetector: () => ({
+      frameProbabilities(residual) {
+        if (detectorThrows) throw new Error('unreachable executed');
+        seen.push(residual.length);
+        return new Float32Array(Math.floor(residual.length / (RATE / 2))).fill(probability);
+      },
+    }),
+  });
+  const fetchDetector = async () => {
+    if (detectorFails) throw new Error('no detector');
+    return new Uint8Array(1);
+  };
+  const filters = createReadAheadFilters({ instantiate, fetchModel: runtimes.fetchModel, fetchDetector });
+  return { filters, seen, runtimes };
+}
+
+const runGated = (filters) =>
+  filters.filter(...stereo(10), RATE, { contextBefore: stereo(2.5), contextAfter: stereo(2.5), keepOtherSounds: true });
+
+test('with no music anywhere the window plays the original', async () => {
+  const { filters, seen } = gated({ probability: 0 });
+  const original = stereo(10);
+  const [left, right, passthrough] = await runGated(filters);
+  assert.deepEqual(seen, [15 * RATE]);
+  assert.deepEqual(Array.from(left), Array.from(original[0]));
+  assert.deepEqual(Array.from(right), Array.from(original[1]));
+  assert.deepEqual(passthrough, [[0, 10]]);
+});
+
+test('with music everywhere the window plays the filtered voice', async () => {
+  const { filters } = gated({ probability: 0.9 });
+  const [left, right, passthrough] = await runGated(filters);
+  assert.equal(left.length, 10 * RATE);
+  assert.deepEqual(Array.from(left), Array.from(right));
+  assert.deepEqual(passthrough, []);
+});
+
+test('a detector that fails to load leaves the window filtered', async () => {
+  const { filters } = gated({ detectorFails: true });
+  const [left, right, passthrough] = await runGated(filters);
+  assert.deepEqual(Array.from(left), Array.from(right));
+  assert.deepEqual(passthrough, []);
+});
+
+test('a detector that throws leaves the window filtered and drops the wasm instance', async () => {
+  const { filters, runtimes } = gated({ detectorThrows: true });
+  const [left, right, passthrough] = await runGated(filters);
+  assert.deepEqual(Array.from(left), Array.from(right));
+  assert.deepEqual(passthrough, []);
+  await runGated(filters);
+  assert.equal(runtimes.runtimes.length, 2);
+});
+
+test('without keepOtherSounds the detector is never loaded', async () => {
+  const { filters, seen } = gated();
+  const output = await filters.filter(...stereo(2), RATE, {});
+  assert.deepEqual(seen, []);
+  assert.equal(output.length, 2);
+});

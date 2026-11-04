@@ -54,7 +54,7 @@ export function createFilterPool(ports, { timeoutMs = DEFAULT_TIMEOUT_MS } = {})
     load(model) {
       for (const port of live) port.postMessage({ type: 'load', model });
     },
-    run({ model, sampleRate, left, right, contextBefore }) {
+    run({ model, sampleRate, left, right, contextBefore, contextAfter, keepOtherSounds }) {
       const port = idle.shift();
       if (!port) return Promise.reject(new Error('no filter worker is available'));
       const id = nextId++;
@@ -65,8 +65,11 @@ export function createFilterPool(ports, { timeoutMs = DEFAULT_TIMEOUT_MS } = {})
         );
         pending.set(id, { resolve, reject, timer, port });
         try {
-          const buffers = [left, right, ...(contextBefore ?? [])].map((samples) => samples.buffer);
-          port.postMessage({ type: 'filter', id, model, sampleRate, left, right, contextBefore }, [...new Set(buffers)]);
+          const buffers = [left, right, ...(contextBefore ?? []), ...(contextAfter ?? [])].map((samples) => samples.buffer);
+          port.postMessage(
+            { type: 'filter', id, model, sampleRate, left, right, contextBefore, contextAfter, keepOtherSounds },
+            [...new Set(buffers)],
+          );
         } catch (error) {
           settle(id, () => (idle.push(port), reject(error)));
         }
