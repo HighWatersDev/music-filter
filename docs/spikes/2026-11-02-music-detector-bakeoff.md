@@ -39,6 +39,8 @@ DPDFNet residual, other thresholds:
 | 0.1 | 58 s | 27 | 60% |
 | 0.2 | 83.5 s | 41 | 70% |
 
+**Shipped detector.** The extension's detector (Rust and tract in `dpdf_bg.wasm`, its own 48 to 32 kHz resampler and spectrogram) gave the same result on the DPDFNet residual at 0.05 on 2026-11-04: 27.5 s let through, 16 leaks, 47% of effects kept. Other thresholds differ by at most 1.5 s of leaks. It matches PyTorch to 6 decimals on the reference clip in `native/dpdf/tests/music-detector-ref.txt`. In Node 24 on the M2 Pro it costs 51 ms per second of audio, single thread. With 2.5 s of context on each side of a 10 s window, that is about 77 ms per second of playback, against 250 ms for DPDFNet-4.
+
 YAMNet ("Music" class) on the DPDFNet residual at 0.05 let 154 s through in 51 leaks, with 47% of quiet music (-25 to -35 dB) let through. It is not a candidate.
 
 Full tables for every detector, input and threshold are in `listening/detector/report-*.json` (not committed) and reproduce with the scripts below.
@@ -80,5 +82,6 @@ Scripts are in `tools/detector-bakeoff/`. Data, models and output go in `listeni
 1. `python build_mixes.py` writes `scenes/NN.wav`, `NN.json` labels and `NN.residual.wav` (exact effects + music).
 2. `node residual.mjs` runs DPDFNet-4 and writes `NN.dpdf-residual.wav`. About 14 s per scene on an M2 Pro.
 3. `python score.py mix`, `python score.py residual` and `python score.py dpdf-residual` print the tables and write `report-<input>.json`.
+4. `node detect.mjs` runs the extension's wasm detector over the DPDFNet residuals, then `python score.py shipped` scores it.
 
 The scenes with residuals take about 1.2 GB.

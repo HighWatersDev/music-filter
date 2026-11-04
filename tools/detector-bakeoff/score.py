@@ -49,6 +49,27 @@ def detector_probabilities(detectors):
     return results
 
 
+def shipped_probabilities():
+    scenes = []
+    for path in sorted(glob.glob(os.path.join(WORK, "scenes/[0-9][0-9].wav"))):
+        labels = json.load(open(path.removesuffix(".wav") + ".json"))
+        prob = np.array(json.load(open(path.removesuffix(".wav") + ".shipped.json")), dtype=float)
+        scenes.append((prob[: len(labels["musicDb"])], labels))
+    return {"Shipped detector (wasm), dpdf-residual": scenes}
+
+
+def pytorch_probabilities():
+    with contextlib.redirect_stdout(io.StringIO()):
+        yamnet = Yamnet()
+        mn05_2s = EfficientAT("mn05_as", 2.0)
+        mn05_4s = EfficientAT("mn05_as", 4.0)
+    return detector_probabilities({
+        f"YAMNet, Music class, {INPUT}": (yamnet, "music"),
+        f"EfficientAT mn05 2 s, Music class, {INPUT}": (mn05_2s, "music"),
+        f"EfficientAT mn05 4 s, Music class, {INPUT}": (mn05_4s, "music"),
+    })
+
+
 def score(scenes, threshold):
     music_db, effects_db, musiclike, opened, leak_runs = [], [], [], [], 0
     for prob, labels in scenes:
@@ -75,16 +96,7 @@ def score(scenes, threshold):
 
 
 def main():
-    with contextlib.redirect_stdout(io.StringIO()):
-        yamnet = Yamnet()
-        mn05_2s = EfficientAT("mn05_as", 2.0)
-        mn05_4s = EfficientAT("mn05_as", 4.0)
-    detectors = {
-        f"YAMNet, Music class, {INPUT}": (yamnet, "music"),
-        f"EfficientAT mn05 2 s, Music class, {INPUT}": (mn05_2s, "music"),
-        f"EfficientAT mn05 4 s, Music class, {INPUT}": (mn05_4s, "music"),
-    }
-    results = detector_probabilities(detectors)
+    results = shipped_probabilities() if INPUT == "shipped" else pytorch_probabilities()
     report = {}
     for name, scenes in results.items():
         report[name] = [score(scenes, t) for t in THRESHOLDS]
