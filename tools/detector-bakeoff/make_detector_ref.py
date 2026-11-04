@@ -18,14 +18,23 @@ CENTRES = [32000, 80000, 128000, 160000]
 TONES = [440.0, 554.37, 659.25]
 
 
+# Noise for 2 s, then a plucked chord with harmonics re-struck every 0.25 s, then quiet noise with a tone.
+# The windows straddle the sections so each gets a different score.
 def clip():
     x = 7
-    noise = np.empty(RATE * SECONDS)
-    for i in range(len(noise)):
+    out = np.empty(RATE * SECONDS)
+    for i in range(len(out)):
         x = (x * 1664525 + 1013904223) & 0xFFFFFFFF
-        noise[i] = ((x >> 8) / 16777216.0 * 2 - 1) * 0.05
-    t = np.arange(RATE * SECONDS) / RATE
-    return (noise + sum(0.1 * np.sin(2 * np.pi * f * t) for f in TONES)).astype(np.float32)
+        noise = (x >> 8) / 16777216.0 * 2 - 1
+        t = i / RATE
+        if t < 2:
+            out[i] = 0.05 * noise
+        elif t < 4:
+            envelope = np.exp(-12 * ((t - 2) % 0.25))
+            out[i] = envelope * sum(0.08 / h * np.sin(2 * np.pi * f * h * t) for f in TONES for h in range(1, 7))
+        else:
+            out[i] = 0.005 * noise + 0.1 * np.sin(2 * np.pi * 1000 * t)
+    return out.astype(np.float32)
 
 
 def main():

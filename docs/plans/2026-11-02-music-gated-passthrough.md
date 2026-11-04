@@ -77,14 +77,23 @@ CENTRES = [32000, 80000, 128000, 160000]
 TONES = [440.0, 554.37, 659.25]
 
 
+# Noise for 2 s, then a plucked chord with harmonics re-struck every 0.25 s, then quiet noise with a tone.
+# The windows straddle the sections so each gets a different score.
 def clip():
     x = 7
-    noise = np.empty(RATE * SECONDS)
-    for i in range(len(noise)):
+    out = np.empty(RATE * SECONDS)
+    for i in range(len(out)):
         x = (x * 1664525 + 1013904223) & 0xFFFFFFFF
-        noise[i] = ((x >> 8) / 16777216.0 * 2 - 1) * 0.05
-    t = np.arange(RATE * SECONDS) / RATE
-    return (noise + sum(0.1 * np.sin(2 * np.pi * f * t) for f in TONES)).astype(np.float32)
+        noise = (x >> 8) / 16777216.0 * 2 - 1
+        t = i / RATE
+        if t < 2:
+            out[i] = 0.05 * noise
+        elif t < 4:
+            envelope = np.exp(-12 * ((t - 2) % 0.25))
+            out[i] = envelope * sum(0.08 / h * np.sin(2 * np.pi * f * h * t) for f in TONES for h in range(1, 7))
+        else:
+            out[i] = 0.005 * noise + 0.1 * np.sin(2 * np.pi * 1000 * t)
+    return out.astype(np.float32)
 
 
 def main():
@@ -113,7 +122,7 @@ mkdir -p ../../native/dpdf/tests
 ../../listening/detector/.venv/bin/python -W ignore make_detector_ref.py 2>&1 | grep -v -E "^INFO|FMAX"
 ```
 
-Expected: 4 lines, `<centre> <probability>`.
+Expected: 4 lines, `<centre> <probability>`, spread out: 0.019, 0.316, 0.513 and 0.007 on 2026-11-04.
 
 **Step 4: Commit**
 
@@ -336,15 +345,26 @@ Add to the tests module:
     }
 
     fn reference_clip() -> Vec<f32> {
-        let rate = 32000.0;
+        let tones = [440.0, 554.37, 659.25];
         let mut x: u32 = 7;
         (0..6 * 32000)
             .map(|i| {
                 x = x.wrapping_mul(1664525).wrapping_add(1013904223);
-                let noise = ((x >> 8) as f64 / 16777216.0 * 2.0 - 1.0) * 0.05;
-                let t = i as f64 / rate;
-                let tones: f64 = [440.0, 554.37, 659.25].iter().map(|f| 0.1 * (2.0 * std::f64::consts::PI * f * t).sin()).sum();
-                (noise + tones) as f32
+                let noise = (x >> 8) as f64 / 16777216.0 * 2.0 - 1.0;
+                let t = i as f64 / 32000.0;
+                let sample = if t < 2.0 {
+                    0.05 * noise
+                } else if t < 4.0 {
+                    let envelope = (-12.0 * ((t - 2.0) % 0.25)).exp();
+                    let chord: f64 = tones
+                        .iter()
+                        .flat_map(|f| (1..7).map(move |h| 0.08 / h as f64 * (2.0 * std::f64::consts::PI * f * h as f64 * t).sin()))
+                        .sum();
+                    envelope * chord
+                } else {
+                    0.005 * noise + 0.1 * (2.0 * std::f64::consts::PI * 1000.0 * t).sin()
+                };
+                sample as f32
             })
             .collect()
     }
