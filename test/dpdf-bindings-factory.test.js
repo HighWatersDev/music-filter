@@ -6,7 +6,8 @@ import { toBindingsFactory } from '../scripts/dpdf-bindings-factory.mjs';
 const GLUE = new URL('../vendor/dpdf/dpdf.js', import.meta.url);
 const WASM = new URL('../extension/assets/dpdf_bg.wasm', import.meta.url);
 const MODEL = new URL('../extension/assets/dpdfnet2.onnx', import.meta.url);
-const missing = [GLUE, WASM, MODEL].filter((url) => !existsSync(url));
+const DETECTOR_MODEL = new URL('../extension/assets/music-detector-mn05.onnx', import.meta.url);
+const missing = [GLUE, WASM, MODEL, DETECTOR_MODEL].filter((url) => !existsSync(url));
 const skip = missing.length ? `missing ${missing.map((url) => url.pathname).join(', ')}` : false;
 
 const importSource = (source) => import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
@@ -22,7 +23,7 @@ class ThrowsOnCopyBack extends Float32Array {
 test('glue of an unexpected shape is refused', () => {
   assert.throws(() => toBindingsFactory('export function initSync() {}'), /changed shape/);
   assert.throws(
-    () => toBindingsFactory("import x from 'y';\nexport class Dpdf {}\nexport { initSync, __wbg_init as default };"),
+    () => toBindingsFactory("import x from 'y';\nexport class Dpdf {}\nexport class MusicDetector {}\nexport { initSync, __wbg_init as default };"),
     /import or export left/,
   );
 });
@@ -47,4 +48,18 @@ test('a trap mid-hop poisons the instance, and the factory gives a fresh one tha
   const fresh = new second.Dpdf(model);
   fresh.process_hop(input, output);
   assert.ok(output.every(Number.isFinite));
+});
+
+test('the factory refuses glue without the music detector', () => {
+  assert.throws(() => toBindingsFactory('export class Dpdf {}\nexport { initSync, __wbg_init as default };'), /changed shape/);
+});
+
+test('the factory exposes a working music detector', { skip }, async () => {
+  const { default: createBindings } = await importSource(toBindingsFactory(readFileSync(GLUE, 'utf8')));
+  const bindings = createBindings();
+  bindings.initSync({ module: new WebAssembly.Module(readFileSync(WASM)) });
+  const detector = new bindings.MusicDetector(new Uint8Array(readFileSync(DETECTOR_MODEL)));
+  const probabilities = detector.frame_probabilities(new Float32Array(10 * 48000).fill(0.01));
+  assert.equal(probabilities.length, 20);
+  assert.ok(Number.isNaN(probabilities[0]) && Number.isFinite(probabilities[10]));
 });

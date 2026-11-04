@@ -7,6 +7,7 @@ use tract_onnx::pb::ModelProto;
 use tract_onnx::prelude::*;
 use tract_onnx::tract_core::internal::{anyhow, ensure};
 use tract_onnx::tract_core::plan::SimplePlan;
+use wasm_bindgen::prelude::*;
 
 pub const INPUT_RATE: usize = 48000;
 pub const DETECTOR_RATE: usize = 32000;
@@ -170,6 +171,23 @@ impl DetectorEngine {
                 self.window_probability(&x[centre - WINDOW_SAMPLES / 2..centre + WINDOW_SAMPLES / 2])
             })
             .collect()
+    }
+}
+
+#[wasm_bindgen]
+pub struct MusicDetector {
+    engine: DetectorEngine,
+}
+
+#[wasm_bindgen]
+impl MusicDetector {
+    #[wasm_bindgen(constructor)]
+    pub fn new(model_bytes: &[u8]) -> Result<MusicDetector, JsError> {
+        DetectorEngine::new(model_bytes).map(|engine| MusicDetector { engine }).map_err(crate::js_error)
+    }
+
+    pub fn frame_probabilities(&mut self, mono48: &[f32]) -> Result<Vec<f32>, JsError> {
+        self.engine.frame_probabilities(mono48).map_err(crate::js_error)
     }
 }
 
