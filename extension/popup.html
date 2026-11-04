@@ -37,6 +37,9 @@
   .switch input:checked + span { background: var(--accent); }
   .switch input:checked + span::after { transform: translateX(18px); }
   .switch input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .option { display: flex; align-items: center; gap: 10px; margin-top: 14px; }
+  .option > div { flex: 1; }
+  .note { margin-top: 2px; color: var(--muted); font-size: 12px; }
   #status { margin: 12px 0 0; min-height: 2.8em; color: var(--muted); }
 </style>
 </head>
@@ -49,6 +52,16 @@
     <span></span>
   </label>
 </header>
+<div class="option">
+  <div>
+    <div id="keep-title">Keep other sounds when there's no music</div>
+    <div id="keep-note" class="note">Very quiet music can slip through. Reload YouTube to apply.</div>
+  </div>
+  <label class="switch">
+    <input id="keep-other-sounds" type="checkbox" role="switch" aria-labelledby="keep-title" aria-describedby="keep-note" disabled>
+    <span></span>
+  </label>
+</div>
 <p id="status" aria-live="polite"></p>
 <script type="module" src="dist/popup.js"></script>
 </body>

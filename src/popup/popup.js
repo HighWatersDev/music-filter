@@ -5,6 +5,7 @@ const api = extensionApi();
 const settings = createSettings(api.storage);
 const toggle = document.getElementById('enabled');
 const status = document.getElementById('status');
+const keepOtherSounds = document.getElementById('keep-other-sounds');
 
 async function activeTabStatus() {
   const [tab] = await api.tabs.query({ active: true, currentWindow: true });
@@ -33,11 +34,14 @@ toggle.addEventListener('change', async () => {
   await settings.writeEnabled(toggle.checked);
   showStatus();
 });
+keepOtherSounds.addEventListener('change', () => settings.writeKeepOtherSounds(keepOtherSounds.checked));
 settings.watchEnabled((on) => {
   toggle.checked = on;
 });
 
 toggle.checked = await settings.readEnabled();
 toggle.disabled = false;
+keepOtherSounds.checked = await settings.readKeepOtherSounds();
+keepOtherSounds.disabled = false;
 showStatus();
 setInterval(showStatus, STATUS_POLL_MS);
