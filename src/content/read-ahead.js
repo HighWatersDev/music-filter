@@ -1,4 +1,6 @@
 import { canPlayProcessed, decideHold } from '../pipeline/hold-policy.js';
+import { isPassthrough } from '../pipeline/music-gate.js';
+import { addRange } from '../pipeline/ranges.js';
 import { findStreamForMedia, streamProblem } from '../pipeline/stream-match.js';
 import { createOriginalAudioRegistry } from './original-audio.js';
 import { selectFilterMode, startLiveFilter } from './live-filter.js';
@@ -47,6 +49,7 @@ let tappedPlayerVolume = null;
 let retainedLimit = RETAINED_BYTES;
 let lighterModel = null;
 let keepOtherSounds = false;
+let passthrough = [];
 
 let panel;
 
@@ -231,6 +234,7 @@ function handleWorkerMessage(message, connection) {
   if (message.streamId !== activeStreamId) return;
   if (message.type === 'window') {
     scheduler?.addWindow(message);
+    passthrough = message.passthrough.reduce((ranges, [from, to]) => addRange(ranges, from, to), passthrough);
     return;
   }
   if (message.type !== 'stream-status') return;
@@ -312,6 +316,7 @@ function activate(stream) {
   activeStreamId = stream.streamId;
   streamFailure = null;
   detail = '';
+  passthrough = [];
   scheduler.reset();
   const problem = streamProblem(stream);
   if (problem) {
@@ -346,6 +351,7 @@ function deactivate() {
   activeStreamId = null;
   streamFailure = null;
   detail = '';
+  passthrough = [];
   scheduler.reset();
 }
 
@@ -358,6 +364,7 @@ function attach(video) {
   attachedVideo = video;
   activeStreamId = null;
   streamFailure = null;
+  passthrough = [];
   heldSince = null;
   playRequestedAt = null;
   videoListeners = new AbortController();
@@ -460,6 +467,7 @@ function tick() {
     state,
     detail: failure ?? detail,
     originalLevel: original.currentLevel(),
+    passthrough: isPassthrough(passthrough, video.currentTime),
     aheadSeconds: scheduler.secondsAhead(),
     windows: scheduler.windows.length,
   });

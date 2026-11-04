@@ -55,3 +55,11 @@ test('problemMessage announces entering a problem, and a new error detail, but n
   assert.equal(problemMessage(on, { ...on, state: 'filtering' }), null);
   assert.equal(problemMessage(error, { ...on, isOn: false, state: 'off' }), null);
 });
+
+test('statusText says when the original sound is playing', () => {
+  assert.equal(
+    statusText({ isOn: true, state: 'filtered', mode: 'read-ahead', aheadSeconds: 27.6, detail: '', passthrough: true }),
+    'Original sound · 28 s ready',
+  );
+  assert.equal(statusText({ isOn: true, state: 'filtered', mode: 'live', detail: '', passthrough: true }), 'Original sound');
+});

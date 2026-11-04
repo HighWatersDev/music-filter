@@ -114,6 +114,7 @@ export function createPanel({ onToggle, mode = 'read-ahead', api = extensionApi(
     aheadSeconds: 0,
     windows: 0,
     originalLevel: 1,
+    passthrough: false,
     stats: null,
     model: null,
     engine: null,
@@ -162,6 +163,7 @@ export function createPanel({ onToggle, mode = 'read-ahead', api = extensionApi(
       originalLevel: String(view.originalLevel),
       aheadSeconds: view.aheadSeconds.toFixed(1),
       windows: String(view.windows),
+      passthrough: String(view.passthrough),
       status,
     });
     if (view.stats) root.dataset.stats = JSON.stringify(view.stats);
