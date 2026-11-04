@@ -10,11 +10,11 @@
 |---|---|---|
 | Default | Off. A popup switch, "Keep other sounds when there's no music". | Voice-only stays unchanged for users who want no music at all. A missed detection plays music. |
 | Mode | When the switch is on, every browser uses read-ahead, desktop included | Detection needs about 1 s of audio. Live mode has about 0.1 s of delay, so music would play for about 1 s at every onset. Read-ahead sees 10 s ahead and switches before music starts. |
-| Detector | Test YAMNet and EfficientAT mn05, keep the one that lets less music through | See below |
+| Detector | EfficientAT mn05_as, 2 s window, "Music" class, threshold 0.05, run on the DPDFNet residual | Bake-off in `spikes/2026-11-02-music-detector-bakeoff.md`. It let 2% of music time through, nearly all of it quiet, and kept 47% of effects. |
 
 ## How it works
 
-For each read-ahead window the worker already has the original audio and the DPDFNet output. It also runs a music detector on the window and mixes the two:
+For each read-ahead window the worker already has the original audio and the DPDFNet output. It runs a music detector on the residual (original minus filtered) and mixes the two. Speech is mostly gone from the residual, so it no longer hides quiet music from the detector.
 
 - Music detected, or unsure: filtered audio, as today.
 - Confidently no music: original audio.
@@ -23,25 +23,18 @@ For each read-ahead window the worker already has the original audio and the DPD
 
 **Window edges.** The rule needs 1.5 s on each side. The detector also reads the `contextBefore` audio the planner already passes, plus the first 1.5 s of the next window. When the next window isn't decoded yet, the end of the window counts as music and stays filtered.
 
-## Detector candidates
+## Detector
 
-| | YAMNet | EfficientAT mn05 |
-|---|---|---|
-| Source | Google, tensorflow/models | fschmid56/EfficientAT |
-| License | Apache-2.0 | MIT code. The weights' terms need checking. |
-| Size and input | 3.7 M params, 16 kHz mono, 0.96 s frames | About 1 M params, 32 kHz mono |
-| AudioSet mAP | 0.31 | About 0.43 |
-
-Both cost a small fraction of DPDFNet. Pick by a listening score on clips with quiet music under speech: seconds of music let through first, seconds of effects kept second.
+EfficientAT mn05_as (github.com/fschmid56/EfficientAT, MIT, weights from its v0.0.1 release). 1.4 M params, 32 kHz mono, 128-band log-mel input. It scores a 2 s window centred on each 0.5 s frame. The bake-off also tried YAMNet, which let five times as much music through.
 
 ## Components
 
 | Piece | Change |
 |---|---|
-| `native/dpdf` | A `MusicDetector` wasm-bindgen class beside `Dpdf`, on tract, in the same `dpdf_bg.wasm` |
+| `native/dpdf` | A `MusicDetector` wasm-bindgen class beside `Dpdf`, on tract, in the same `dpdf_bg.wasm`. It computes the mel spectrogram itself to match EfficientAT's `AugmentMelSTFT` (window 800, hop 320, 128 bands). |
 | `extension/assets`, `scripts/fetch-models.sh` | The detector ONNX, pinned by SHA-256, mirrored to the GitHub release |
 | `src/pipeline/music-gate.js` (new, pure) | Frame probabilities to a 0..1 mix curve: the ±1.5 s rule and the crossfades |
-| `src/separator/filter-worker.js` | After DPDFNet: downmix, resample to the detector rate with the existing resampler, detect, then output = curve × original + (1 − curve) × filtered |
+| `src/separator/filter-worker.js` | After DPDFNet: residual = original − filtered, downmix, resample to 32 kHz with the existing resampler, detect, then output = curve × original + (1 − curve) × filtered |
 | `src/content/settings.js`, popup | `keepOtherSounds`, off by default, and its switch |
 | `selectFilterMode` | Returns read-ahead when `keepOtherSounds` is on. Changing it restarts filtering on open YouTube tabs. |
 | Panel and player icon status | "Filtered" or "Original sound" for the current moment |
@@ -54,7 +47,7 @@ If the detector fails to load or throws, the worker skips the mix and plays the 
 
 - Unit: `music-gate.js` thresholds, window edges with and without the next window, and the crossfade shape.
 - Rust: the detector matches onnxruntime on a fixed clip.
-- `tools/listen`: score each candidate on local clips for music let through and effects kept.
+- `tools/detector-bakeoff`: rerun the scoring against the shipped detector to check it matches the PyTorch numbers.
 - e2e: read-ahead with `keepOtherSounds` on, the curve follows a clip with a known music section.
 
 ## Listing copy
