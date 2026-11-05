@@ -74,11 +74,14 @@ Tested on 2026-11-04 and 2026-11-05 with the switch on. Desktop runs used Chromi
 | [Fine Dining Kitchen ASMR, no music](https://www.youtube.com/watch?v=cKCoTkzLHa0) | Desktop | O for 2 of about 70 s. Most frames score 0.01 to 0.05, but chops and sizzles spike to 0.1 to 0.57 every few seconds, and each spike keeps 3.5 s filtered. |
 | [Finding beauty in the ordinary, silent vlog](https://www.youtube.com/watch?v=0saslFui3fI) | Desktop | O at 3 to 12, 14 to 15, 24 to 25 and 41 to 43 s. |
 | Same vlog | Phone | O at 13 to 16, 25 to 29, 39 to 45, 51 to 72 and 80 to 86 s. Quiet stretches score 0.004 to 0.03. The user heard the room sounds and found the changes fine. |
+| [The T. rex Escapes the Paddock](https://www.youtube.com/watch?v=Rc_i5TKdmhs) | Desktop | First 44 s, before the score starts: mostly O, scores about 0.01, short F gaps where single frames reach 0.1 to 0.15. |
+| [Sound Effects for Movies & Video Games](https://www.youtube.com/watch?v=ktPMqOGXYsY) | Desktop | Music-heavy start scores 0.5 to 0.8 and stays F to 32 s. O at 33 to 35 and 43 s. |
+| Same video | Phone | O at 31 to 32, 86 to 87, 92 to 95 and 100 to 109 s, F elsewhere in the first 2 minutes. The effects are played on timpani, cymbals and drums, which the detector mostly hears as music. The user heard some effects and found others filtered. |
 
 - Dense effects often stay filtered even with no music. That is the cost of the 0.05 threshold and the ±3 frame reach.
-- The phone took 10.9 s per 10 s window with DPDFNet-2 while gating, slightly slower than real time. Long videos may stall.
+- The phone took 10.9 to 11.4 s per 10 s window with DPDFNet-2 while gating, slightly slower than real time. The sound effects video paused for about 7 s at 6 s while the filter caught up.
 - `web-ext run` starts the add-on with the switch off, so turn it on and reload YouTube after every new run.
-- Not yet checked: a video with speech, effects and a separate music section, such as a game trailer. None of the videos above has much speech, so the LibriSpeech caveat is still open.
+- Not yet checked: a long video with clear speech under no music. The T. rex clip likely has dialogue in its first 44 s, but nobody listened to confirm it, so the LibriSpeech caveat is still open.
 
 ## Pinned inputs
 
