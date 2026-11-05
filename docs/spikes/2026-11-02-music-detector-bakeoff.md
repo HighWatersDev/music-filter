@@ -45,6 +45,31 @@ YAMNet ("Music" class) on the DPDFNet residual at 0.05 let 154 s through in 51 l
 
 Full tables for every detector, input and threshold are in `listening/detector/report-*.json` (not committed) and reproduce with the scripts below.
 
+## Newer detectors (2026-11-05)
+
+The first bake-off only tried mn05 and YAMNet. This rerun adds the larger EfficientAT models and CED (Dinkel et al., ICASSP 2024), the strongest small AudioSet taggers found in a November 2026 search. inaVAMOS (INA, September 2026) was left out because its license is research only. LiteCASS still has no released weights.
+
+Same scenes, DPDFNet residual, "Music" class, same gate rule. Thresholds were swept from 0.01 to 0.6 in steps of 0.005, because each model's scores sit at a different level. Each cell is the most effects any threshold keeps while letting at most that much music through. Cost is PyTorch, one thread, M2 Pro. The shipped mn05 costs about twice its PyTorch figure in wasm.
+
+| Detector | AudioSet mAP | Params | ms per s of audio | ≤5 s let through | ≤10 s | ≤20 s | ≤30 s | ≤45 s |
+|---|---|---|---|---|---|---|---|---|
+| **mn05, 2 s (shipped)** | 44.3 | 1.4 M | 25 | 10% | 25% | 38% | **47%** | 56% |
+| mn05, 4 s | 44.3 | 1.4 M | 46 | 12% | 28% | 33% | 44% | 54% |
+| mn10, 4 s | 47.1 | 4.9 M | 114 | 20% | 33% | 38% | 45% | 59% |
+| dymn10, 2 s | 47.7 | 10.5 M | 65 | 13% | 14% | 38% | 45% | 61% |
+| dymn10, 4 s | 47.7 | 10.5 M | 105 | 9% | 26% | 57% | 60% | 64% |
+| CED-Tiny, 2 s | 48.1 | 5.5 M | 6 | 10% | 13% | 20% | 28% | 35% |
+| CED-Mini, 2 s | 49.0 | 9.7 M | 8 | 14% | 19% | 27% | 32% | 37% |
+| CED-Mini, 4 s | 49.0 | 9.7 M | 17 | 20% | 35% | 39% | 42% | 46% |
+
+- A higher AudioSet mAP does not mean a better music gate. Both CED models keep fewer effects than mn05 at the shipped leak level, even though they score higher on AudioSet.
+- mn10 gives nonsense on 2 s windows ("Hammer", "Sawing" and "Clickety-clack" at 1.0 on a guitar clip). It needs at least 4 s.
+- dymn10 with 4 s windows is the only clear gain: 60% of effects against 47% at the same leak level. It costs about 4 times mn05's compute. The Galaxy A56 is already slightly slower than real time with mn05, so it cannot afford that.
+- CED-Mini with 4 s windows is best at tight leak budgets (35% against 25% at 10 s let through) and costs less than mn05. It would suit a stricter setting, not more effects.
+- The threshold moves effects kept far more than the choice of detector. mn05 keeps 56% at 45 s let through.
+
+Decision: keep mn05. Revisit dymn10 with 4 s windows if a desktop-only setting is ever wanted. Reproduce with `tools/detector-bakeoff/compare.py`.
+
 ## Test set
 
 40 scenes of 56 s (37 minutes). Each scene has 8 segments of 7 s, chosen at random from speech only, speech + effect, effect only, speech + music, speech + effect + music, music only and effect + music.
@@ -102,5 +127,6 @@ Scripts are in `tools/detector-bakeoff/`. Data, models and output go in `listeni
 2. `node residual.mjs` runs DPDFNet-4 and writes `NN.dpdf-residual.wav`. About 14 s per scene on an M2 Pro.
 3. `python score.py mix`, `python score.py residual` and `python score.py dpdf-residual` print the tables and write `report-<input>.json`.
 4. `node detect.mjs` runs the extension's wasm detector over the DPDFNet residuals, then `python score.py shipped` scores it.
+5. `python compare.py cache <detector>` for each name in `DETECTORS`, then `python compare.py report`. It needs a `CED` clone (github.com/RicherMans/CED at `4b2149dc9ba1ed25c6348083f82dba03f00a5022`, code GPL-3.0, weights CC-BY-4.0 from Zenodo record 8275319) beside `EfficientAT`, plus torchaudio 2.5.1, einops 0.8.1 and loguru 0.7.3. Weights download on first use.
 
 The scenes with residuals take about 1.2 GB.

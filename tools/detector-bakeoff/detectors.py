@@ -64,8 +64,11 @@ class EfficientAT:
         sys.path.insert(0, os.getcwd())
         try:
             from helpers.utils import NAME_TO_WIDTH, labels
-            from models.mn.model import get_model
             from models.preprocess import AugmentMelSTFT
+            if name.startswith("dymn"):
+                from models.dymn.model import get_model
+            else:
+                from models.mn.model import get_model
             self.model = get_model(width_mult=NAME_TO_WIDTH(name), pretrained_name=name).eval()
         finally:
             os.chdir(cwd)
@@ -82,6 +85,33 @@ class EfficientAT:
                 spec = self.mel(torch.from_numpy(batch))
                 logits, _ = self.model(spec.unsqueeze(1))
                 rows.append(torch.sigmoid(logits).numpy())
+        return np.concatenate(rows)
+
+
+def audioset_labels():
+    with open(os.path.join(WORK, "EfficientAT/metadata/class_labels_indices.csv")) as f:
+        return [row.split(",", 2)[2].strip().strip('"') for row in f.read().splitlines()[1:]]
+
+
+# CED's code and EfficientAT's both import a top-level package called `models`, so one process loads only one of them.
+class Ced:
+    rate = 16000
+
+    def __init__(self, name="ced_tiny", window_seconds=2.0):
+        self.window_seconds = window_seconds
+        sys.path.insert(0, os.path.join(WORK, "CED"))
+        import models as ced_models
+        self.model = getattr(ced_models, name)(pretrained=True).eval()
+        self.labels = audioset_labels()
+        self.music, self.music_set = music_indices(self.labels)
+
+    def scores(self, audio48):
+        audio = soxr.resample(audio48, 48000, self.rate).astype(np.float32)
+        windows = np.stack(list(frame_windows(audio, self.rate, self.window_seconds))).astype(np.float32)
+        rows = []
+        with torch.no_grad():
+            for batch in np.array_split(windows, max(1, len(windows) // 32)):
+                rows.append(self.model(torch.from_numpy(batch)).numpy())
         return np.concatenate(rows)
 
 
