@@ -54,9 +54,13 @@ jobs:
           path: |
             extension/assets/dpdfnet4.onnx
             extension/assets/dpdfnet2.onnx
+            extension/assets/music-detector-mn05.onnx
           key: models-${{ hashFiles('scripts/fetch-models.sh') }}
 
       - run: npm run fetch:models
+      - name: Test the music detector against PyTorch
+        working-directory: native/dpdf
+        run: cargo test --release --lib music_detector
       - run: npm run build:dpdf
       - run: npm run build
       - run: npm test

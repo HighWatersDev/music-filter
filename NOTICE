@@ -11,6 +11,11 @@ DPDFNet speech enhancement models (dpdfnet4.onnx, dpdfnet2.onnx)
   https://huggingface.co/Ceva-IP/DPDFNet
   https://github.com/ceva-ip/DPDFNet
 
+EfficientAT mn05_as audio tagging model (music-detector-mn05.onnx)
+  Copyright 2022 Florian Schmid
+  MIT License
+  https://github.com/fschmid56/EfficientAT
+
 tract (tract-onnx and related crates), compiled into assets/dpdf_bg.wasm
   Copyright Sonos, Inc. and contributors
   MIT or Apache License, Version 2.0

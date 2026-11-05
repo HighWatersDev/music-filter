@@ -63,3 +63,19 @@ test('watchEnabled ignores other keys and other storage areas, and stops when as
   storage.emit({ enabled: { newValue: false } }, 'local');
   assert.deepEqual(heard, [true]);
 });
+
+test('keepOtherSounds is off until the user turns it on', async () => {
+  assert.equal(await createSettings(fakeStorage()).readKeepOtherSounds(), false);
+  assert.equal(await createSettings(fakeStorage({ keepOtherSounds: true })).readKeepOtherSounds(), true);
+});
+
+test('keepOtherSounds reads as off when storage fails, and stores the choice', async () => {
+  const broken = fakeStorage();
+  broken.local.get = async () => {
+    throw new Error('storage unavailable');
+  };
+  assert.equal(await createSettings(broken).readKeepOtherSounds(), false);
+  const settings = createSettings(fakeStorage());
+  await settings.writeKeepOtherSounds(true);
+  assert.equal(await settings.readKeepOtherSounds(), true);
+});

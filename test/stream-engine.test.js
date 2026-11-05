@@ -360,6 +360,74 @@ test('a continuing window gets up to 2 s of the decoded audio before it as conte
   assertSame(third.options.contextBefore[0], second.left.subarray(1 * S, 3 * S));
 });
 
+test('contextAfterSeconds passes the decoded audio after each window', async () => {
+  const S = 48000;
+  const calls = [];
+  const capture = async (left, right, rate, options) => {
+    calls.push({ left, options });
+    return [left, right];
+  };
+  const { engine } = startEngine({ separate: capture, config: { windowSeconds: 4, contextAfterSeconds: 1 } });
+  engine.pushChunk(bytes);
+  engine.setPlayhead(0, true);
+  await settle(engine);
+  const [first, second] = calls;
+  assert.equal(first.options.contextAfter[0].length, 1 * S);
+  assert.equal(first.options.contextAfter[1].length, 1 * S);
+  assertSame(first.options.contextAfter[0], second.left.subarray(1 * S, 2 * S));
+});
+
+test('contextAfter is empty by default', async () => {
+  const lengths = [];
+  const capture = async (left, right, rate, options) => {
+    lengths.push(options.contextAfter[0].length);
+    return [left, right];
+  };
+  const { engine } = startEngine({ separate: capture, config: { windowSeconds: 4 } });
+  engine.pushChunk(bytes);
+  engine.setPlayhead(0, true);
+  await settle(engine);
+  assert.ok(lengths.length >= 3 && lengths.every((length) => length === 0));
+});
+
+test('contextAfter stops where the decoded audio ends', async () => {
+  const S = 48000;
+  const contextAfterFor = async (decodedSeconds) => {
+    const contexts = [];
+    const capture = async (left, right, rate, options) => {
+      contexts.push({ length: left.length, after: options.contextAfter[0].length });
+      return [left, right];
+    };
+    const { engine } = startEngine({ separate: capture, config: { windowSeconds: 4, contextAfterSeconds: 2 } });
+    engine.timeline.write(0, [new Float32Array(decodedSeconds * S).fill(1), new Float32Array(decodedSeconds * S).fill(1)]);
+    engine.processed = [[0, 4.5 * S]];
+    engine.setPlayhead(1, true);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    return contexts[0];
+  };
+  assert.deepEqual(await contextAfterFor(10), { length: 4 * S, after: 2 * S });
+  assert.deepEqual(await contextAfterFor(8.5), { length: 3 * S, after: 2 * S });
+  assert.deepEqual(await contextAfterFor(6), { length: 2.5 * S, after: 0 });
+});
+
+test('passthrough ranges from separate come back in media seconds', async () => {
+  const separate = async (left, right) => [left, right, [[0.5, 1]]];
+  const { engine, windows } = startEngine({ separate, config: { windowSeconds: 4 } });
+  engine.pushChunk(bytes);
+  engine.setPlayhead(0, true);
+  await settle(engine);
+  assert.deepEqual(windows[0].passthrough, [[0.5, 1]]);
+  assert.deepEqual(windows[1].passthrough, [[windows[1].startSeconds + 0.5, windows[1].startSeconds + 1]]);
+});
+
+test('a window without passthrough ranges reports none', async () => {
+  const { engine, windows } = startEngine({ config: { windowSeconds: 4 } });
+  engine.pushChunk(bytes);
+  engine.setPlayhead(0, true);
+  await settle(engine);
+  assert.deepEqual(windows[0].passthrough, []);
+});
+
 function assertSame(actual, expected) {
   assert.equal(actual.length, expected.length);
   assert.equal(actual.findIndex((sample, i) => sample !== expected[i]), -1);

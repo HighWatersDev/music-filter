@@ -24,19 +24,20 @@ Links used everywhere:
 > • It's on as soon as you install it. Open a YouTube video and the music is removed.
 > • To hear the original audio, tap the music-note button in the top-left corner of the player. It shows with YouTube's own controls.
 > • The Music Filter button in the browser toolbar has the same switch and shows the status.
+> • To keep sound effects and ambient sound wherever there is no music, turn on "Keep other sounds when there's no music" in the toolbar button, then reload YouTube.
 >
 > What to expect
 > • Speech comes through clearly. Most music is removed, including music under speech.
-> • It keeps voices only, so sound effects and ambient sound are removed too.
+> • By default it keeps voices only, so sound effects and ambient sound are removed too. Keep other sounds brings them back where there is no music. Effects that sound like music, such as drums, often stay filtered.
 > • Singing is a voice, so sung vocals still come through.
-> • While the filter is on, the original music never plays. If filtering fails, the video is muted with a message.
+> • While the filter is on, the original music never plays. With Keep other sounds on, very quiet music can slip through. If filtering fails, the video is muted with a message.
 >
 > Private by design
-> • The filtering model runs inside your browser.
+> • The filtering models run inside your browser.
 > • No account, no analytics, no data collection, no server.
 > • Audio is held in memory only while you watch.
 >
-> Open source under Apache-2.0. Uses the DPDFNet speech enhancement model by Ceva.
+> Open source under Apache-2.0. Uses the DPDFNet speech enhancement model by Ceva and the EfficientAT audio tagging model.
 
 ## Chrome Web Store
 
@@ -45,9 +46,9 @@ Links used everywhere:
 | Category | Accessibility |
 | Language | English |
 | Single purpose | Removes music from the audio of YouTube videos while they play. |
-| `storage` justification | Remembers whether the filter is on, so the user doesn't have to turn it on for every video. Stored on the device only. |
+| `storage` justification | Remembers whether the filter is on and whether to keep other sounds, so the user doesn't have to set them for every video. Stored on the device only. |
 | Host permission justification (`youtube.com`, `m.youtube.com`) | The content scripts read the audio YouTube streams to the page so the extension can filter out music and play the filtered audio in sync with the video. It does nothing on other sites. |
-| Remote code | No. All code and the model ship in the package. |
+| Remote code | No. All code and the models ship in the package. |
 | Data usage | Collects none of the listed data types. Certify all three disclosures. |
 | Privacy policy URL | See links above |
 | Screenshots | `docs/store/screenshots/chrome-1-overview.png`, 1280×800 |
@@ -82,6 +83,7 @@ Same package and copy as Chrome. Category: Accessibility.
 > The bundled JavaScript in dist/ is built with esbuild from src/ (npm run build). It is not minified.
 > assets/dpdf_bg.wasm is compiled from the Rust crate in native/dpdf (npm run build:dpdf). The pinned toolchain is in native/dpdf/rust-toolchain.toml, and vendor/dpdf/SOURCE records the expected sha256.
 > assets/dpdfnet4.onnx and dpdfnet2.onnx are the Apache-2.0 DPDFNet models from huggingface.co/Ceva-IP/DPDFNet at a pinned revision. scripts/fetch-models.sh downloads them, from a copy in this repo's GitHub release or else from Hugging Face, and checks their sha256.
+> assets/music-detector-mn05.onnx is the MIT EfficientAT mn05_as model (github.com/fschmid56/EfficientAT), exported with tools/detector-bakeoff/export_onnx.py. scripts/fetch-models.sh downloads it from this repo's GitHub release and checks its sha256.
 > To test: open any YouTube video with talking over background music. The filter is on by default. Move the pointer over the player and click the music-note button at the top left to compare with the original audio. The toolbar button has the same switch.
 
 ## Apple App Store (iPhone, iPad, Mac)

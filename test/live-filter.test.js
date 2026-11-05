@@ -182,6 +182,15 @@ test('mode selection uses read-ahead on Safari and live on desktop Chrome and Fi
   assert.equal(mode('', undefined), 'live');
 });
 
+test('keeping other sounds uses read-ahead even on desktop Chrome and Firefox', () => {
+  assert.equal(mode('Google Inc.', UA.chromeMac, { keepOtherSounds: true }), 'read-ahead');
+  assert.equal(mode('', UA.firefoxMac, { keepOtherSounds: true }), 'read-ahead');
+  assert.equal(
+    selectFilterMode({ vendor: 'Google Inc.', hostname: 'localhost', override: 'live', keepOtherSounds: true }),
+    'live',
+  );
+});
+
 test('mode selection uses read-ahead on Firefox for Android', () => {
   assert.equal(mode('', UA.firefoxAndroid), 'read-ahead');
 });

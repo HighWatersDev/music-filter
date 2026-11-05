@@ -9,7 +9,10 @@ const MESSAGES = {
   waiting: () => 'Waiting for audio',
   starting: () => 'Starting filter…',
   filtering: () => 'Filtering…',
-  filtered: (view) => (view.mode === 'live' ? 'Filtered' : `Filtered · ${view.aheadSeconds.toFixed(0)} s ready`),
+  filtered: (view) => {
+    const label = view.passthrough ? 'Original sound' : 'Filtered';
+    return view.mode === 'live' ? label : `${label} · ${view.aheadSeconds.toFixed(0)} s ready`;
+  },
   muted: () => 'Filter works at Normal speed',
   'too-slow': () => 'This device is too slow to filter live',
   error: (view) => `Can't filter this video: ${view.detail}`,

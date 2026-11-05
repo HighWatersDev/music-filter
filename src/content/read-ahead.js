@@ -1,10 +1,13 @@
 import { canPlayProcessed, decideHold } from '../pipeline/hold-policy.js';
+import { isPassthrough } from '../pipeline/music-gate.js';
+import { addRange } from '../pipeline/ranges.js';
 import { findStreamForMedia, streamProblem } from '../pipeline/stream-match.js';
 import { createOriginalAudioRegistry } from './original-audio.js';
 import { selectFilterMode, startLiveFilter } from './live-filter.js';
 import { createPanel } from './panel.js';
 import { PlaybackScheduler } from './playback-scheduler.js';
 import { connectSeparator } from './separator-client.js';
+import { createSettings, extensionApi } from './settings.js';
 
 const TAP_CONNECT = 'music-filter:tap-connect';
 const SOURCE_ATTRIBUTE = 'data-mf-media-source';
@@ -45,23 +48,32 @@ let playRequestedAt = null;
 let tappedPlayerVolume = null;
 let retainedLimit = RETAINED_BYTES;
 let lighterModel = null;
+let isGateDropped = false;
+let keepOtherSounds = false;
+let passthrough = [];
 
 let panel;
 
-const filterMode = selectFilterMode({
-  vendor: navigator.vendor,
-  userAgent: navigator.userAgent,
-  maxTouchPoints: navigator.maxTouchPoints,
-  isMobile: navigator.userAgentData?.mobile,
-  hostname: location.hostname,
-  override: readModeOverride(),
-});
 connectTap();
-if (filterMode === 'live') {
-  retainedLimit = LIVE_RETAINED_BYTES;
-  startLiveFilter({ onTooSlowAtStart: takeOverFromLive });
-} else {
-  startReadAhead(createPanel({ onToggle: toggle }));
+start();
+
+async function start() {
+  keepOtherSounds = keepOtherSoundsOverride() ?? (await createSettings(extensionApi().storage).readKeepOtherSounds());
+  const filterMode = selectFilterMode({
+    vendor: navigator.vendor,
+    userAgent: navigator.userAgent,
+    maxTouchPoints: navigator.maxTouchPoints,
+    isMobile: navigator.userAgentData?.mobile,
+    hostname: location.hostname,
+    override: readModeOverride(),
+    keepOtherSounds,
+  });
+  if (filterMode === 'live') {
+    retainedLimit = LIVE_RETAINED_BYTES;
+    startLiveFilter({ onTooSlowAtStart: takeOverFromLive });
+  } else {
+    startReadAhead(createPanel({ onToggle: toggle }));
+  }
 }
 
 function toggle(on) {
@@ -95,6 +107,15 @@ function takeOverFromLive({ context: liveContext, originals: liveOriginals, pane
 function readModeOverride() {
   try {
     return localStorage.getItem('mf_mode');
+  } catch {
+    return null;
+  }
+}
+
+// Lets the e2e test turn the switch on without the extension's storage.
+function keepOtherSoundsOverride() {
+  try {
+    return location.hostname === 'localhost' && localStorage.getItem('mf_keep_other_sounds') === '1' ? true : null;
   } catch {
     return null;
   }
@@ -214,6 +235,7 @@ function handleWorkerMessage(message, connection) {
   if (message.streamId !== activeStreamId) return;
   if (message.type === 'window') {
     scheduler?.addWindow(message);
+    passthrough = message.passthrough.reduce((ranges, [from, to]) => addRange(ranges, from, to), passthrough);
     return;
   }
   if (message.type !== 'stream-status') return;
@@ -221,9 +243,10 @@ function handleWorkerMessage(message, connection) {
   if (message.stage === 'starved') replay(message);
   if (message.stage === 'loading') detail = 'loading voice filter';
   if (message.stage === 'model') lighterModel = MODEL_LABELS[message.model] ?? message.model;
+  if (message.stage === 'gate-dropped') isGateDropped = true;
   if (message.stage === 'window') {
     const timing = `window ${message.durationSeconds.toFixed(0)} s in ${(message.computeMs / 1000).toFixed(1)} s`;
-    detail = lighterModel ? `${lighterModel}, ${timing}` : timing;
+    detail = [lighterModel, isGateDropped && 'other sounds off, too slow', timing].filter(Boolean).join(', ');
   }
 }
 
@@ -295,6 +318,7 @@ function activate(stream) {
   activeStreamId = stream.streamId;
   streamFailure = null;
   detail = '';
+  passthrough = [];
   scheduler.reset();
   const problem = streamProblem(stream);
   if (problem) {
@@ -308,7 +332,7 @@ function sendRetained(stream) {
   const playheadSeconds = attachedVideo?.currentTime ?? 0;
   const { streamId } = stream;
   stream.resetId += 1;
-  send({ type: 'stream-reset', streamId, resetId: stream.resetId, mime: stream.mime, model: MODEL, playheadSeconds });
+  send({ type: 'stream-reset', streamId, resetId: stream.resetId, mime: stream.mime, model: MODEL, playheadSeconds, keepOtherSounds });
   if (stream.init) sendChunk(streamId, stream.init);
   for (const chunk of stream.chunks) sendChunk(streamId, chunk);
   send({ type: 'stream-replay-end', streamId });
@@ -329,6 +353,7 @@ function deactivate() {
   activeStreamId = null;
   streamFailure = null;
   detail = '';
+  passthrough = [];
   scheduler.reset();
 }
 
@@ -341,6 +366,7 @@ function attach(video) {
   attachedVideo = video;
   activeStreamId = null;
   streamFailure = null;
+  passthrough = [];
   heldSince = null;
   playRequestedAt = null;
   videoListeners = new AbortController();
@@ -443,6 +469,7 @@ function tick() {
     state,
     detail: failure ?? detail,
     originalLevel: original.currentLevel(),
+    passthrough: isPassthrough(passthrough, video.currentTime),
     aheadSeconds: scheduler.secondsAhead(),
     windows: scheduler.windows.length,
   });

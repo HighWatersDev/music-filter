@@ -25,8 +25,17 @@ const SWITCH_TIMEOUT_MS = 10000;
 const TICK_MS = 250;
 
 // A touch screen alone is not enough: Windows laptops have one and handle live filtering.
-export function selectFilterMode({ vendor, userAgent = '', maxTouchPoints = 0, isMobile = false, hostname, override }) {
+export function selectFilterMode({
+  vendor,
+  userAgent = '',
+  maxTouchPoints = 0,
+  isMobile = false,
+  hostname,
+  override,
+  keepOtherSounds = false,
+}) {
   if (hostname === 'localhost' && MODES.has(override)) return override;
+  if (keepOtherSounds) return 'read-ahead';
   if (vendor === SAFARI_VENDOR) return 'read-ahead';
   const isFirefox = userAgent.includes('Firefox/');
   if (isFirefox && (userAgent.includes('Android') || userAgent.includes('Mobile'))) return 'read-ahead';

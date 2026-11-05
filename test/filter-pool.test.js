@@ -80,3 +80,21 @@ test('a request that never gets a reply rejects after the timeout and its worker
   assert.equal((await pool.run(request(2))).left[0], 2);
   workers.close();
 });
+
+test('run sends the context on both sides and the keepOtherSounds flag, and transfers the context', async () => {
+  const workers = fakeWorkers(1, (port, data) =>
+    port.postMessage({ type: 'filtered', id: data.id, left: data.left, right: data.right, passthrough: [[0, 1]], computeMs: 1 }),
+  );
+  try {
+    const pool = createFilterPool(workers.ports);
+    const contextAfter = [new Float32Array([7]), new Float32Array([8])];
+    const done = await pool.run({ ...request(1), contextBefore: [new Float32Array([5]), new Float32Array([6])], contextAfter, keepOtherSounds: true });
+    const [sent] = workers.seen;
+    assert.deepEqual([...(sent.contextAfter?.[0] ?? []), ...(sent.contextAfter?.[1] ?? [])], [7, 8]);
+    assert.equal(sent.keepOtherSounds, true);
+    assert.equal(contextAfter[0].byteLength, 0, 'contextAfter was copied instead of transferred');
+    assert.deepEqual(done.passthrough, [[0, 1]]);
+  } finally {
+    workers.close();
+  }
+});

@@ -21,7 +21,8 @@ The current state is in the README, `plans/2026-10-30-parallel-read-ahead.md` an
 | [2026-10-26-live-desktop-and-safari-fixes.md](plans/2026-10-26-live-desktop-and-safari-fixes.md) | Live mode on desktop, Safari read-ahead fixes | Historical, superseded by the DPDFNet swap |
 | [2026-10-26-dpdfnet-swap.md](plans/2026-10-26-dpdfnet-swap.md) | Replace DeepFilterNet3 with DPDFNet in both modes | Current |
 | [2026-10-30-parallel-read-ahead.md](plans/2026-10-30-parallel-read-ahead.md) | Read-ahead across 2 or 3 Workers, quick start, model fallback | Current |
-| [2026-11-02-music-gated-passthrough-design.md](plans/2026-11-02-music-gated-passthrough-design.md) | Play the original audio where a detector hears no music, so effects survive | Design, not built |
+| [2026-11-02-music-gated-passthrough-design.md](plans/2026-11-02-music-gated-passthrough-design.md) | Play the original audio where a detector hears no music, so effects survive | Built |
+| [2026-11-02-music-gated-passthrough.md](plans/2026-11-02-music-gated-passthrough.md) | Implementation plan for music-gated passthrough, 14 tasks | Done |
 
 ## Spikes and results
 
@@ -32,6 +33,7 @@ The current state is in the README, `plans/2026-10-30-parallel-read-ahead.md` an
 | [2026-10-25-read-ahead-results.md](spikes/2026-10-25-read-ahead-results.md) | Read-ahead with DeepFilterNet3 on each platform | Historical |
 | [2026-10-26-dpdfnet-results.md](spikes/2026-10-26-dpdfnet-results.md) | DPDFNet measurements on desktop, simulators and a Galaxy A56, plus open issues | Current |
 | [2026-10-30-tiger-browser.md](spikes/2026-10-30-tiger-browser.md) | DBS-TIGER (keeps sound effects) is too slow and too large for the browser | Current |
+| [2026-11-02-music-detector-bakeoff.md](spikes/2026-11-02-music-detector-bakeoff.md) | Picks the music detector, input and threshold for music-gated passthrough, plus listening results | Current |
 
 ## Store
 

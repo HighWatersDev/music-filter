@@ -10,6 +10,9 @@ use tract_onnx::tract_core::ops::scan::OptScan;
 use tract_onnx::tract_core::plan::SimplePlan;
 use wasm_bindgen::prelude::*;
 
+mod music_detector;
+pub use music_detector::MusicDetector;
+
 struct ModelInfo {
     n: usize,
     hop: usize,
@@ -202,7 +205,7 @@ impl Engine {
     }
 }
 
-fn js_error(e: TractError) -> JsError {
+pub(crate) fn js_error(e: TractError) -> JsError {
     JsError::new(&format!("{e:?}"))
 }
 
