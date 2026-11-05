@@ -64,6 +64,22 @@ Music seconds per level bucket: 649 (≥-15 dB), 332 (-15 to -25), 253.5 (-25 to
 - ESC-50 effects are short, isolated clips. Film and game effects are often longer and denser.
 - Music-like effects (bells, birds, sirens, insects, crickets, alarms) are kept less often (45% at 0.05). That is expected and safe.
 
+## Listening
+
+Tested on 2026-11-04 and 2026-11-05 with the switch on. Desktop runs used Chromium with the unpacked extension. Phone runs used a Galaxy A56 with Firefox for Android through `web-ext run`. O means original sound and F means filtered, read from the panel each second.
+
+| Video | Where | Result |
+|---|---|---|
+| [Arctic Geese Chicks, Hostile Planet](https://www.youtube.com/watch?v=H1S6UCX4RAA) | Desktop and phone | Filtered throughout. Orchestral score under every scene, scores 0.18 to 0.92. Correct. |
+| [Fine Dining Kitchen ASMR, no music](https://www.youtube.com/watch?v=cKCoTkzLHa0) | Desktop | O for 2 of about 70 s. Most frames score 0.01 to 0.05, but chops and sizzles spike to 0.1 to 0.57 every few seconds, and each spike keeps 3.5 s filtered. |
+| [Finding beauty in the ordinary, silent vlog](https://www.youtube.com/watch?v=0saslFui3fI) | Desktop | O at 3 to 12, 14 to 15, 24 to 25 and 41 to 43 s. |
+| Same vlog | Phone | O at 13 to 16, 25 to 29, 39 to 45, 51 to 72 and 80 to 86 s. Quiet stretches score 0.004 to 0.03. The user heard the room sounds and found the changes fine. |
+
+- Dense effects often stay filtered even with no music. That is the cost of the 0.05 threshold and the ±3 frame reach.
+- The phone took 10.9 s per 10 s window with DPDFNet-2 while gating, slightly slower than real time. Long videos may stall.
+- `web-ext run` starts the add-on with the switch off, so turn it on and reload YouTube after every new run.
+- Not yet checked: a video with speech, effects and a separate music section, such as a game trailer. None of the videos above has much speech, so the LibriSpeech caveat is still open.
+
 ## Pinned inputs
 
 | Item | Version |
