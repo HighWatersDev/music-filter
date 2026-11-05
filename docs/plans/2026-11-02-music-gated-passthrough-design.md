@@ -24,7 +24,9 @@ For each read-ahead window the filter worker has the original audio and the DPDF
 
 **Rule.** The detector gives a music probability every 0.5 s. A frame plays the original only if it and the 3 frames on each side, 3.5 s in all, are below 0.05. A frame the detector cannot score counts as music. Changes fade over 200 ms, and the fades sit inside the open region, so a closed frame always plays fully filtered. DPDFNet still runs on every window, so its recurrent state never jumps.
 
-**Context.** The rule needs 1.5 s of scores on each side, and each score needs 1 s of audio on each side. So each window is filtered together with 2.5 s of audio before and after it (`GATE_CONTEXT` in `src/separator/worker.js`), then trimmed back. The first and last 2.5 s of a video stay filtered. So does the end of a window when the audio after it is not decoded yet.
+**Context.** The rule needs 1.5 s of scores on each side, and each score needs 1 s of audio on each side. Frames sit on a 0.5 s grid and the fades take 0.2 s. So each window is filtered together with 3 s of audio before and after it (`GATE.contextSeconds` in `src/pipeline/music-gate.js`), then trimmed back. With full context a music-free window plays the original from its first sample to its last.
+
+The first and last 3 s of a video stay filtered, and so does the start of the first window after a seek. A continuing window stops 3 s short of the decoded audio, or waits for more, until playback is within 5 s of the filtered end. Past that point it ends at the decoded end, and its last seconds stay filtered.
 
 **Panel.** The worker returns the open ranges in media seconds. The panel shows "Original sound" while the playhead is inside one, and "Filtered" otherwise.
 
@@ -50,12 +52,14 @@ The Rust side resamples 48 kHz to 32 kHz with a Kaiser windowed-sinc filter, app
 
 ## Failure
 
-If the detector fails to load, the window plays filtered and the next window tries again. If it throws, the window plays filtered and the wasm instance is dropped, because a wasm trap leaves it unusable. An error never lets music through.
+If the detector fails to load, the window plays filtered and the next window tries again. If it returns an error, the window plays filtered. If it traps, the window plays filtered and the wasm instance is dropped, because a trap leaves it unusable. An error never lets music through.
+
+If playback falls behind while the lightest model is already in use, the worker turns the gate off for the rest of the page and the panel status says "other sounds off, too slow".
 
 ## Tests
 
-- Unit: `test/music-gate.test.js` covers the rule, NaN and edge frames, the fade shape, the mix and the ranges. `read-ahead-filters`, `stream-engine`, `settings` and `controls-policy` tests cover the wiring.
-- Rust: the resampler, parity with PyTorch on the reference clip, NaN frames at the edges, and metadata checks.
+- Unit: `test/music-gate.test.js` covers the rule, NaN and edge frames, the fade shape, the mix and the ranges. `read-ahead-filters` checks that the context keeps the fades outside the window with the detector's real unscored edges. `window-planner`, `stream-engine`, `settings` and `controls-policy` tests cover the wiring.
+- Rust: the resampler, parity with PyTorch on the reference clip, NaN frames at the edges, and metadata checks. CI runs them, and they fail there when the model is missing.
 - `tools/detector-bakeoff/detect.mjs` with `score.py shipped`: the wasm detector reproduces the bake-off scores.
 - e2e: `npm run test:e2e:keep` runs read-ahead with the switch on against the real models and checks the panel reports a passthrough state.
 

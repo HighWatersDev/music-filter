@@ -144,3 +144,25 @@ test('ramp starts over after a seek past the processed audio', () => {
     end: 45 * S,
   });
 });
+
+test('a gated window leaves room for the audio after it, and waits for that audio until playback is close', () => {
+  const gated = { ...base, contextAfter: 3 * S };
+  assert.deepEqual(planNextWindow({ ...gated, playhead: 0, decoded: [[0, 60 * S]], processed: [[0, 4 * S]] }), {
+    start: 3 * S,
+    end: 13 * S,
+  });
+  assert.deepEqual(planNextWindow({ ...gated, playhead: 0, decoded: [[0, 15 * S]], processed: [[0, 4 * S]] }), {
+    start: 3 * S,
+    end: 12 * S,
+  });
+  assert.equal(planNextWindow({ ...gated, playhead: 0, decoded: [[0, 21 * S]], processed: [[0, 10 * S]] }), null);
+  assert.deepEqual(planNextWindow({ ...base, playhead: 0, decoded: [[0, 21 * S]], processed: [[0, 10 * S]] }), {
+    start: 9 * S,
+    end: 19 * S,
+  });
+});
+
+test('an urgent gated window without room for the audio after it still ends at the decoded end', () => {
+  const plan = planNextWindow({ ...base, contextAfter: 3 * S, playhead: 7 * S, decoded: [[0, 12 * S]], processed: [[0, 10 * S]] });
+  assert.deepEqual(plan, { start: 9 * S, end: 12 * S });
+});

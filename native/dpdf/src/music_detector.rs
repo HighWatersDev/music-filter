@@ -224,7 +224,12 @@ mod tests {
     }
     fn model_bytes() -> Option<Vec<u8>> {
         let path = format!("{}/../../extension/assets/music-detector-mn05.onnx", env!("CARGO_MANIFEST_DIR"));
-        std::fs::read(&path).map_err(|_| eprintln!("skipping: {path} missing, run npm run fetch:models")).ok()
+        let bytes = std::fs::read(&path).ok();
+        assert!(bytes.is_some() || std::env::var_os("CI").is_none(), "{path} missing, run npm run fetch:models");
+        if bytes.is_none() {
+            eprintln!("skipping: {path} missing, run npm run fetch:models");
+        }
+        bytes
     }
 
     fn reference_clip() -> Vec<f32> {
@@ -272,7 +277,7 @@ mod tests {
         let probabilities = engine.frame_probabilities(&vec![0.01; 10 * INPUT_RATE]).unwrap();
         assert_eq!(probabilities.len(), 20);
         assert!(probabilities[..2].iter().chain(&probabilities[18..]).all(|p| p.is_nan()));
-        assert!(probabilities[3..17].iter().all(|p| p.is_finite()));
+        assert!(probabilities[2..18].iter().all(|p| p.is_finite()));
     }
 
     #[test]

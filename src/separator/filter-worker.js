@@ -12,6 +12,7 @@ const DETECTOR_MODEL_URL = new URL('../assets/music-detector-mn05.onnx', import.
 const DPDF_SAMPLE_RATE = 48000;
 let dpdfModule;
 const warmModels = new Set();
+let discards = 0;
 const oneAtATime = createSerialQueue();
 
 async function fetchBytes(url) {
@@ -45,6 +46,10 @@ const filters = createReadAheadFilters({
   instantiate: instantiateDpdf,
   fetchModel: (model) => fetchBytes(DPDF_MODEL_URLS[model]),
   fetchDetector: () => fetchBytes(DETECTOR_MODEL_URL),
+  onDiscard: () => {
+    discards++;
+    warmModels.clear();
+  },
 });
 
 async function filterWindow({ model, sampleRate, left, right, contextBefore, contextAfter, keepOtherSounds }) {
@@ -52,16 +57,12 @@ async function filterWindow({ model, sampleRate, left, right, contextBefore, con
   if (!Object.hasOwn(DPDF_MODEL_URLS, model)) throw new Error(`unknown model ${model}`);
   // The model choice compares compute time across windows, so loading a model must not count toward it.
   await filters.load(model);
+  if (keepOtherSounds) await filters.loadDetector();
   const isWarm = warmModels.has(model);
+  const discardsBefore = discards;
   const startedAt = performance.now();
-  let output;
-  try {
-    output = await filters.filter(left, right, sampleRate, { contextBefore, contextAfter, model, keepOtherSounds });
-  } catch (error) {
-    warmModels.clear();
-    throw error;
-  }
-  warmModels.add(model);
+  const output = await filters.filter(left, right, sampleRate, { contextBefore, contextAfter, model, keepOtherSounds });
+  if (discards === discardsBefore) warmModels.add(model);
   return { output, computeMs: performance.now() - startedAt, isWarm };
 }
 

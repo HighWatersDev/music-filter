@@ -406,7 +406,7 @@ test('contextAfter stops where the decoded audio ends', async () => {
     return contexts[0];
   };
   assert.deepEqual(await contextAfterFor(10), { length: 4 * S, after: 2 * S });
-  assert.deepEqual(await contextAfterFor(8.5), { length: 4 * S, after: 1 * S });
+  assert.deepEqual(await contextAfterFor(8.5), { length: 3 * S, after: 2 * S });
   assert.deepEqual(await contextAfterFor(6), { length: 2.5 * S, after: 0 });
 });
 

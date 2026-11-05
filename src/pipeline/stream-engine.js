@@ -343,6 +343,7 @@ export class StreamEngine {
       urgency: c.urgencySeconds * rate,
       maxStartGap: c.maxStartGapSeconds * rate,
       ramp: c.rampWindows,
+      contextAfter: c.contextAfterSeconds * rate,
     });
   }
 

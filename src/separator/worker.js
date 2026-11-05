@@ -1,19 +1,21 @@
 import { createTaskPool, StreamEngine } from '../pipeline/stream-engine.js';
 import { createFilterPool } from './filter-pool.js';
 import { createModelPolicy } from './read-ahead-filters.js';
+import { GATE } from '../pipeline/music-gate.js';
 
 const post = (message, transfer = []) => self.postMessage(message, transfer);
 
 const STREAM_MESSAGES = new Set(['stream-reset', 'stream-chunk', 'stream-replay-end', 'stream-abort', 'playhead']);
 // 'dfn3' is what the read-ahead content script sent before the DPDFNet swap. It now gets DPDFNet-4 too.
 const VOICE_MODELS = new Set(['dpdfnet4', 'dfn3']);
-// The gate needs 2.5 s of audio on each side of a window. See music-gate.js.
-const GATE_CONTEXT = { warmUpBeforeSeconds: 2.5, contextAfterSeconds: 2.5 };
+const GATE_CONTEXT = { warmUpBeforeSeconds: GATE.contextSeconds, contextAfterSeconds: GATE.contextSeconds };
 let stream = null;
 let filterPool;
 let modelPolicy;
 let enqueueSeparation;
 let hasFiltered = false;
+// Set for the rest of the page once the lightest model falls behind with the gate on.
+let isGateDropped = false;
 
 function connect(ports) {
   filterPool = createFilterPool(ports);
@@ -37,6 +39,7 @@ function createWindowFilter(model, streamId, { keepOtherSounds = false } = {}) {
   filterPool.load(modelPolicy.model);
   return async (left, right, sampleRate, { contextBefore, contextAfter, runSeconds = 0 } = {}) => {
     const used = modelPolicy.modelFor({ runSeconds });
+    const isGating = keepOtherSounds && !isGateDropped;
     const result = await filterPool.run({
       model: used,
       sampleRate,
@@ -44,10 +47,10 @@ function createWindowFilter(model, streamId, { keepOtherSounds = false } = {}) {
       right: copyOf(right),
       contextBefore: contextBefore?.map(copyOf),
       contextAfter: contextAfter?.map(copyOf),
-      keepOtherSounds,
+      keepOtherSounds: isGating,
     });
     hasFiltered = true;
-    const samples = left.length + (contextBefore?.[0]?.length ?? 0);
+    const samples = left.length + (contextBefore?.[0]?.length ?? 0) + (isGating ? contextAfter?.[0]?.length ?? 0 : 0);
     modelPolicy.observe({ model: used, isWarm: result.isWarm, computeMs: result.computeMs, samples, sampleRate });
     return [result.left, result.right, result.passthrough ?? []];
   };
@@ -55,7 +58,8 @@ function createWindowFilter(model, streamId, { keepOtherSounds = false } = {}) {
 
 function handleStream(data) {
   if (data.type === 'stream-reset') {
-    const { streamId, resetId, model, playheadSeconds = 0, keepOtherSounds = false } = data;
+    const { streamId, resetId, model, playheadSeconds = 0 } = data;
+    const keepOtherSounds = Boolean(data.keepOtherSounds) && !isGateDropped;
     stream?.engine.reset();
     stream = {
       id: streamId,
@@ -70,7 +74,10 @@ function handleStream(data) {
           post({ type: 'window', streamId, ...window }, transfer);
         },
         onStatus: (status) => {
-          if (status.stage === 'behind') modelPolicy?.fallBack('behind');
+          if (status.stage === 'behind' && !modelPolicy?.fallBack('behind') && keepOtherSounds && !isGateDropped) {
+            isGateDropped = true;
+            post({ type: 'stream-status', streamId, resetId, stage: 'gate-dropped' });
+          }
           post({ type: 'stream-status', streamId, resetId, ...status });
         },
         onWarning: (message) => post({ type: 'stream-status', streamId, stage: 'warning', message }),

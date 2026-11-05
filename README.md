@@ -40,7 +40,7 @@ The filter is on by default and remembers your choice.
 - On Safari and Firefox for Android the filter works at normal speed only. At other speeds the video is muted.
 - On Safari and Firefox for Android only Opus audio can be filtered. If YouTube serves AAC, the video is muted with "unsupported audio type".
 - Phones filter a few seconds ahead of playback, so the video pauses briefly after it starts and after a seek. Phones slower than a Galaxy A56 may pause more often.
-- With Keep other sounds on, desktop browsers also filter ahead of playback and pause briefly at the start. On a Galaxy A56 filtering then takes slightly longer than the video plays, so expect occasional pauses.
+- With Keep other sounds on, desktop browsers also filter ahead of playback and pause briefly at the start. On a Galaxy A56 filtering then takes slightly longer than the video plays. If it keeps falling behind, Keep other sounds turns itself off until the page is reloaded, and the status says so.
 
 ## How it works
 

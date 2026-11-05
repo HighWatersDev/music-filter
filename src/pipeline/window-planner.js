@@ -44,6 +44,7 @@ export function planNextWindow({
   urgency,
   maxStartGap,
   ramp = false,
+  contextAfter = 0,
 }) {
   const processedEnd = processedRunEnd(processed, playhead, maxStartGap);
   const runway = processedEnd - playhead;
@@ -60,6 +61,12 @@ export function planNextWindow({
   const continuingLength = ramp ? Math.min(window, Math.max(firstWindow, 2 * runLength)) : window;
   const target = start + (continuing ? continuingLength : firstWindow);
   const decodedEnd = bridgedEnd(decoded, start, maxStartGap);
+  // The music gate keeps a window's end filtered unless the audio after it is decoded. Until playback is
+  // within the urgency margin, a continuing window waits for that audio or stops short of it.
+  if (contextAfter > 0 && continuing && decodedEnd - contextAfter < target) {
+    if (processedEnd - playhead > urgency) return null;
+    if (decodedEnd - contextAfter - processedEnd >= minWindow) return { start, end: decodedEnd - contextAfter };
+  }
   if (decodedEnd >= target) return { start, end: target };
 
   const fresh = decodedEnd - (continuing ? processedEnd : start);

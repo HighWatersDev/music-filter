@@ -1,4 +1,6 @@
-export const GATE = { frameSeconds: 0.5, threshold: 0.05, reachFrames: 3, fadeSeconds: 0.2 };
+// A score needs 1 s of audio on each side and a frame needs 3 scores on each side, so a span's open region
+// starts 2.5 s in and ends up to 2.75 s before its end. Another 0.25 s keeps the 0.2 s fades outside the window.
+export const GATE = { frameSeconds: 0.5, threshold: 0.05, reachFrames: 3, fadeSeconds: 0.2, contextSeconds: 3 };
 
 // NaN compares false, so a frame the detector could not score counts as music, and so does any frame
 // past either end.

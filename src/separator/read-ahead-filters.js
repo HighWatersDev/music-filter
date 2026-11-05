@@ -49,9 +49,10 @@ export function createModelPolicy({
     },
     fallBack(reason) {
       const next = SLOW_FALLBACK[model];
-      if (!next) return;
+      if (!next) return false;
       model = next;
       onModelChange({ model, reason });
+      return true;
     },
     observe({ model: used, isWarm, computeMs, samples, sampleRate }) {
       if (isJudged || !isWarm || used !== model || samples / sampleRate < minJudgeSeconds) return;
@@ -68,9 +69,10 @@ export function createModelPolicy({
 
 // Both models stay built, because quick-start windows use DPDFNet-2 and later windows DPDFNet-4.
 // A wasm trap leaves the instance unusable: wasm-bindgen's borrow flag on the engine stays set, so every
-// later call fails with "recursive use of an object". Any error therefore drops the whole instance, and
-// the next window instantiates the module again.
-export function createReadAheadFilters({ instantiate, fetchModel, fetchDetector }) {
+// later call fails with "recursive use of an object". Any filter error therefore drops the whole instance, and
+// the next window instantiates the module again. A detector that returns an error has not trapped, so only a
+// trap there drops the instance.
+export function createReadAheadFilters({ instantiate, fetchModel, fetchDetector, onDiscard = () => {} }) {
   let runtime = null;
   let detector = null;
   const filters = new Map();
@@ -79,6 +81,7 @@ export function createReadAheadFilters({ instantiate, fetchModel, fetchDetector 
     runtime = null;
     detector = null;
     filters.clear();
+    onDiscard();
   }
 
   function filterFor(name) {
@@ -128,8 +131,8 @@ export function createReadAheadFilters({ instantiate, fetchModel, fetchDetector 
     let probabilities;
     try {
       probabilities = loaded.frameProbabilities(residual);
-    } catch {
-      discardRuntime();
+    } catch (error) {
+      if (error instanceof WebAssembly.RuntimeError) discardRuntime();
       return filtered();
     }
     const curve = gateCurve(openFrames(probabilities), {
@@ -143,6 +146,10 @@ export function createReadAheadFilters({ instantiate, fetchModel, fetchDetector 
 
   return {
     load: (name) => filterFor(name),
+    loadDetector: () => detectorFor().then(
+      () => {},
+      () => {},
+    ),
     async filter(left, right, sampleRate, { contextBefore, contextAfter, model = FIRST_MODEL, keepOtherSounds = false } = {}) {
       const { voiceFilter } = await filterFor(model);
       try {

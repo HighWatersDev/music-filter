@@ -48,6 +48,7 @@ let playRequestedAt = null;
 let tappedPlayerVolume = null;
 let retainedLimit = RETAINED_BYTES;
 let lighterModel = null;
+let isGateDropped = false;
 let keepOtherSounds = false;
 let passthrough = [];
 
@@ -242,9 +243,10 @@ function handleWorkerMessage(message, connection) {
   if (message.stage === 'starved') replay(message);
   if (message.stage === 'loading') detail = 'loading voice filter';
   if (message.stage === 'model') lighterModel = MODEL_LABELS[message.model] ?? message.model;
+  if (message.stage === 'gate-dropped') isGateDropped = true;
   if (message.stage === 'window') {
     const timing = `window ${message.durationSeconds.toFixed(0)} s in ${(message.computeMs / 1000).toFixed(1)} s`;
-    detail = lighterModel ? `${lighterModel}, ${timing}` : timing;
+    detail = [lighterModel, isGateDropped && 'other sounds off, too slow', timing].filter(Boolean).join(', ');
   }
 }
 
